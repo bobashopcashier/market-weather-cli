@@ -113,8 +113,8 @@ func TestSchemaPublishesRuntimeStringConstraints(t *testing.T) {
 	if options["--model"].MaxLength != 256 || options["--model"].Pattern != resourceValueSchemaPattern || options["--model"].Normalization != "trim" {
 		t.Fatalf("Wethr model constraint does not match runtime validation: %#v", options["--model"])
 	}
-	if options["--fields"].MaxLength != maximumFieldMaskBytes || options["--fields"].LengthUnit != "utf8Bytes" {
-		t.Fatalf("field-mask length is missing: %#v", options["--fields"])
+	if options["--fields"].MaxLength != maximumFieldMaskBytes || options["--fields"].LengthUnit != "utf8Bytes" || options["--fields"].MaximumPaths != maximumFieldPaths || options["--fields"].MaximumPathDepth != maximumFieldPathDepth {
+		t.Fatalf("field-mask limits are missing: %#v", options["--fields"])
 	}
 
 	nws := schemaDocument(findDefinition(t, "wethr", "nws"))
