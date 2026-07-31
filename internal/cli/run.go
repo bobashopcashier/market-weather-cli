@@ -15,6 +15,8 @@ import (
 
 var commands = map[string]func(context.Context, []string) error{
 	"betmoar":      runBetmoar,
+	"data":         runData,
+	"dataframe":    runData,
 	"metar":        runMETAR,
 	"wethr":        runWethr,
 	"polyweather":  runPolyweather,
@@ -30,7 +32,7 @@ func Run(forcedTool string, argv []string) int {
 	if err == nil {
 		return 0
 	}
-	jsonOutput := hasArg(argv, "--json") || hasArg(argv, "-j")
+	jsonOutput := hasArg(argv, "--json") || hasArg(argv, "-j") || dataDefaultsToJSON(forcedTool, argv)
 	var appErr *provider.Error
 	if !errors.As(err, &appErr) {
 		appErr = &provider.Error{Code: "internal_error", Message: err.Error(), ExitCode: 1}
@@ -47,6 +49,23 @@ func Run(forcedTool string, argv []string) int {
 		return 1
 	}
 	return appErr.ExitCode
+}
+
+func dataDefaultsToJSON(forcedTool string, argv []string) bool {
+	isData := forcedTool == "data" || forcedTool == "dataframe" || forcedTool == "" && len(argv) > 0 && (argv[0] == "data" || argv[0] == "dataframe")
+	if !isData {
+		return false
+	}
+	for index, argument := range argv {
+		if strings.HasPrefix(argument, "--output=") || strings.HasPrefix(argument, "-o=") {
+			_, value, _ := strings.Cut(argument, "=")
+			return value == "json"
+		}
+		if (argument == "--output" || argument == "-o") && index+1 < len(argv) {
+			return argv[index+1] == "json"
+		}
+	}
+	return true
 }
 
 func execute(ctx context.Context, forcedTool string, argv []string) error {

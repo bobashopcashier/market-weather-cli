@@ -1,4 +1,4 @@
-BINS := mwx betmoar metar wethr polyweather open-meteo meteoblue wunderground
+BINS := mwx dataframe betmoar metar wethr polyweather open-meteo meteoblue wunderground
 DIST := dist
 
 .PHONY: all build test check install clean

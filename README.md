@@ -1,8 +1,9 @@
 # market-weather-cli
 
-Standalone Go CLIs for prediction-market research, aviation observations, and
-weather forecasts. The project turns the tools in the original list into seven
-provider-named commands, with `mwx` as an optional umbrella command.
+Standalone Go CLIs for prediction-market research, aviation observations,
+weather forecasts, and composable dataframe operations. The project turns the
+tools in the original list into provider-named commands, with `mwx` as an
+optional umbrella command.
 
 ```text
 betmoar       Public Polymarket discovery and order books
@@ -12,6 +13,7 @@ polyweather   METAR + forecast + Polymarket weather-market dashboard
 open-meteo    Geocoded current weather and forecasts
 meteoblue     meteoblue package API
 wunderground  Weather Underground PWS data via The Weather Company
+dataframe     Pandas-style CSV, JSON, and JSONL transformations
 ```
 
 The binaries use only the Go standard library. They have stable `--json`
@@ -37,6 +39,7 @@ Run the umbrella command without installing:
 ```bash
 go run ./cmd/mwx providers
 go run ./cmd/mwx open-meteo "San Francisco" --days 5
+go run ./cmd/mwx data describe passengers.csv --columns Age,Fare --output table
 ```
 
 ## Quick start
@@ -55,6 +58,9 @@ betmoar book <yes-token-id> --json
 
 polyweather KSFO "San Francisco"
 polyweather KJFK "New York" --json
+
+dataframe read-csv passengers.csv --output table
+dataframe query passengers.csv --expr 'Age >= 18 and Survived == 1'
 ```
 
 Check all integrations without exposing credential values:
@@ -63,6 +69,39 @@ Check all integrations without exposing credential values:
 mwx providers
 mwx providers --json
 ```
+
+## Pandas-style data commands
+
+`dataframe` implements all 35 operations used by the referenced Kaggle
+notebook as native Go operations. The same command is available under
+`mwx data`. It reads a file or standard input and supports CSV, JSON, JSONL,
+record-oriented JSON, column-oriented JSON, and nested JSON selected with an
+RFC 6901 JSON Pointer.
+
+```bash
+# Read and inspect a CSV file.
+dataframe head passengers.csv -n 10 --output table
+dataframe describe passengers.csv --columns Age,Fare --output table
+
+# Clean, filter, and aggregate.
+dataframe fillna passengers.csv --columns Age --strategy mean \
+  | dataframe query - --expr 'Age >= 18' \
+  | dataframe groupby - --by Sex --agg Age:mean,Fare:max --output table
+
+# Analyze structured output from any provider command.
+metar KSFO KJFK --json \
+  | mwx data head - --path /observations -n 1 --output table
+
+open-meteo "San Francisco" --json \
+  | mwx data describe - --path /forecast/daily --layout columns --output table
+```
+
+JSON is the default so commands compose without adapters. Table-valued output
+uses the versioned `mwx.table/v1` envelope with ordered columns, current inferred
+types, and rows. Use `--output csv` or `--output table` at the end of a pipeline.
+
+See [docs/dataframe.md](docs/dataframe.md) for the 35-operation mapping,
+complete option reference, expression syntax, and more examples.
 
 ## Credentialed providers
 
@@ -126,9 +165,10 @@ resolution source.
 
 ## Output contract
 
-Human-readable output is the default. `--json` emits one JSON document to
-standard output. Errors go to standard error; with `--json`, errors have this
-shape:
+Human-readable output is the default for provider commands. `--json` emits one
+JSON document to standard output. Dataframe commands default to composable JSON
+and accept `--output json|csv|table`. Errors go to standard error; with JSON
+output, errors have this shape:
 
 ```json
 {

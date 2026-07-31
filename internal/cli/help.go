@@ -1,8 +1,8 @@
 package cli
 
-const version = "0.1.0"
+const version = "0.2.0"
 
-const rootHelp = `mwx: prediction-market and weather command-line tools
+const rootHelp = `mwx: prediction-market, weather, and dataframe command-line tools
 
 Usage:
   mwx <tool> [arguments] [options]
@@ -15,10 +15,12 @@ Tools:
   open-meteo    Geocoded current weather and forecasts
   meteoblue     meteoblue package API
   wunderground  Weather Underground PWS data via The Weather Company
+  data          Pandas-style transforms for CSV, JSON, and JSONL tables
   providers     Show provider readiness and credential requirements
 
-Every tool is also installed as its own executable. Use --json for stable,
-machine-readable output. API keys are read only from environment variables.
+Provider tools are also installed as their own executables, and data is
+installed as dataframe. Use --json for stable, machine-readable provider
+output. API keys are read only from environment variables.
 `
 
 var toolHelp = map[string]string{
@@ -102,5 +104,55 @@ Usage:
 
 Example:
   wunderground KMAHANOV10 --units e
+`,
+	"data": `dataframe: composable, pandas-style table operations in pure Go
+
+Usage:
+  mwx data <operation> [input|-] [options]
+  dataframe <operation> [input|-] [options]
+
+Input:
+  --input-format auto|csv|json|jsonl   Detect by extension/content by default
+  --path /json/pointer                 Select a nested JSON array or object
+  --layout auto|records|columns        Interpret JSON records or column arrays
+  --strings                            Keep CSV fields as strings
+
+Output:
+  --output json|csv|table              JSON is the composable default
+  --json                               Alias for --output json
+
+Notebook operations:
+  read-csv       columns        head            tail
+  shape          info           describe        select-dtypes
+  astype         value-counts   unique          nunique
+  isnull         notnull        duplicated      drop-duplicates
+  rename         map            query           isin
+  drop           fillna         dropna          groupby
+  agg            sort-values    loc             iloc
+  cut            apply          profile         idxmax
+  get-dummies    concat         to-numpy
+
+Common examples:
+  dataframe read-csv passengers.csv --output table
+  dataframe describe passengers.csv --columns Age,Fare --output table
+  dataframe query passengers.csv --expr 'Age >= 18 and Survived == 1'
+  dataframe groupby passengers.csv --by Sex --agg Age:mean,Fare:max
+  dataframe fillna passengers.csv --columns Age --strategy mean
+  dataframe cut passengers.csv --column Age --bins 0,12,19,35,60,100 --labels child,teen,adult,middle,senior
+  dataframe apply passengers.csv --expr 'SibSp + Parch' --output-column family_size
+
+Compose with every market and weather CLI:
+  metar KSFO KJFK --json | mwx data head --path /observations -n 1 --output table
+  open-meteo "San Francisco" --json | mwx data describe --path /forecast/daily --layout columns --output table
+
+Use dataframe <operation> --help for this overview. Operation-specific values
+are supplied with --column/--columns, --expr, --by, --agg, and related flags.
+`,
+	"dataframe": `dataframe: composable, pandas-style table operations in pure Go
+
+Usage:
+  dataframe <operation> [input|-] [options]
+
+Run mwx data --help for the full operation list and examples.
 `,
 }
