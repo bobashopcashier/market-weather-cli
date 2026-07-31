@@ -19,6 +19,22 @@ output, runtime command schemas, raw JSON requests, strict command-specific
 validation, explicit exit codes, response-size limits, timeouts, credential
 redaction, and no shell-based API calls.
 
+
+### Raw curl versus `--fields`
+
+For the task “show San Francisco's daily high and low temperatures for the next
+seven days,” the projected CLI response retained the temperature unit, forecast
+dates, daily highs, and daily lows: everything needed for that task. Raw curl
+returned the full current-weather and daily-forecast response used by the
+adapter.
+
+| Path | Output bytes | Output tokens | Command + output tokens | Median time |
+|---|---:|---:|---:|---:|
+| Raw curl | 1,634 | 677 | 872 | 721.9 ms |
+| CLI with `--fields` | 265 | 128 | 179 | 721.9 ms |
+| Observed reduction | **83.8%** | **81.1%** | **79.5%** | tied |
+
+
 ## Agent-safe discovery and requests
 
 The CLI is self-describing. A bare schema request returns a compact offline
@@ -54,20 +70,6 @@ metar KSFO KJFK --hours 2 --json \
   --fields source,observations.icaoId,observations.reportTime,observations.temp \
   --compact
 ```
-
-### Raw curl versus `--fields`
-
-For the task “show San Francisco's daily high and low temperatures for the next
-seven days,” the projected CLI response retained the temperature unit, forecast
-dates, daily highs, and daily lows: everything needed for that task. Raw curl
-returned the full current-weather and daily-forecast response used by the
-adapter.
-
-| Path | Output bytes | Output tokens | Command + output tokens | Median time |
-|---|---:|---:|---:|---:|
-| Raw curl | 1,634 | 677 | 872 | 721.9 ms |
-| CLI with `--fields` | 265 | 128 | 179 | 721.9 ms |
-| Observed reduction | **83.8%** | **81.1%** | **79.5%** | Effectively tied |
 
 Reproduce the projected CLI request:
 
