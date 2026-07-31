@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -15,11 +14,14 @@ type WundergroundResult struct {
 }
 
 func (c *Client) GetPWSCurrent(ctx context.Context, stationID, units string) (WundergroundResult, error) {
+	stationID, err := validatePWSStation(stationID)
+	if err != nil {
+		return WundergroundResult{}, err
+	}
 	key, err := requiredEnv("WEATHER_COMPANY_API_KEY", "Weather Underground PWS data")
 	if err != nil {
 		return WundergroundResult{}, err
 	}
-	stationID = strings.ToUpper(strings.TrimSpace(stationID))
 	query := url.Values{
 		"stationId": {stationID}, "format": {"json"}, "units": {units},
 		"numericPrecision": {"decimal"}, "apiKey": {key},

@@ -20,8 +20,11 @@ type MeteoblueResult struct {
 }
 
 func (c *Client) GetMeteoblue(ctx context.Context, input, packageName string) (MeteoblueResult, error) {
-	if !meteobluePackagePattern.MatchString(packageName) {
+	if len(packageName) > 128 || !meteobluePackagePattern.MatchString(packageName) {
 		return MeteoblueResult{}, NewError("invalid_arguments", "invalid meteoblue package name", 2)
+	}
+	if _, err := validateFreeText("location", input, 256); err != nil {
+		return MeteoblueResult{}, err
 	}
 	key, err := requiredEnv("METEOBLUE_API_KEY", "meteoblue")
 	if err != nil {

@@ -1,14 +1,15 @@
 BINS := mwx betmoar metar wethr polyweather open-meteo meteoblue wunderground
-DIST := dist
+BUILD_DIR := $(CURDIR)/dist
 
 .PHONY: all build test check install clean
 
 all: check build
 
 build:
-	@mkdir -p $(DIST)
+	@rm -rf -- "$(BUILD_DIR)"
+	@mkdir -p "$(BUILD_DIR)"
 	@for bin in $(BINS); do \
-		go build -trimpath -o $(DIST)/$$bin ./cmd/$$bin; \
+		go build -trimpath -o "$(BUILD_DIR)/$$bin" ./cmd/$$bin; \
 	done
 
 test:
@@ -25,4 +26,4 @@ install:
 	done
 
 clean:
-	rm -rf $(DIST)
+	rm -rf -- "$(BUILD_DIR)"

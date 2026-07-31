@@ -3,10 +3,22 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"time"
 )
+
+const (
+	MaximumMarketsPerEvent = 100
+	MaximumOrderBookLevels = 500
+)
+
+type Truncation struct {
+	Path         string `json:"path"`
+	SourceCount  int    `json:"sourceCount"`
+	EmittedCount int    `json:"emittedCount"`
+}
 
 type MarketOutcome struct {
 	Name    string   `json:"name"`
@@ -38,10 +50,11 @@ type MarketEvent struct {
 }
 
 type MarketSearchResult struct {
-	Source    string        `json:"source"`
-	FetchedAt string        `json:"fetchedAt"`
-	Query     string        `json:"query"`
-	Events    []MarketEvent `json:"events"`
+	Source     string        `json:"source"`
+	FetchedAt  string        `json:"fetchedAt"`
+	Query      string        `json:"query"`
+	Events     []MarketEvent `json:"events"`
+	Truncation []Truncation  `json:"truncation,omitempty"`
 }
 
 type rawSearch struct {
@@ -142,6 +155,10 @@ func normalizeMarket(raw rawMarket) Market {
 }
 
 func (c *Client) SearchMarkets(ctx context.Context, queryText string, limit int, includeClosed bool) (MarketSearchResult, error) {
+	queryText, err := validateFreeText("market search query", queryText, 512)
+	if err != nil {
+		return MarketSearchResult{}, err
+	}
 	status := "active"
 	if includeClosed {
 		status = "all"
@@ -156,6 +173,16 @@ func (c *Client) SearchMarkets(ctx context.Context, queryText string, limit int,
 		return MarketSearchResult{}, err
 	}
 	events := make([]MarketEvent, 0, len(raw.Events))
+	truncation := []Truncation{}
+	eligibleEvents := 0
+	for _, event := range raw.Events {
+		if includeClosed || !event.Closed && event.Active {
+			eligibleEvents++
+		}
+	}
+	if eligibleEvents > limit {
+		truncation = append(truncation, Truncation{Path: "events", SourceCount: eligibleEvents, EmittedCount: limit})
+	}
 	for _, event := range raw.Events {
 		if !includeClosed && (event.Closed || !event.Active) {
 			continue
@@ -163,34 +190,61 @@ func (c *Client) SearchMarkets(ctx context.Context, queryText string, limit int,
 		if len(events) >= limit {
 			break
 		}
-		markets := make([]Market, 0, len(event.Markets))
+		markets := make([]Market, 0, min(len(event.Markets), MaximumMarketsPerEvent))
+		eligibleMarkets := 0
 		for _, market := range event.Markets {
 			if !includeClosed && market.Closed {
 				continue
 			}
-			markets = append(markets, normalizeMarket(market))
+			eligibleMarkets++
+			if len(markets) < MaximumMarketsPerEvent {
+				markets = append(markets, normalizeMarket(market))
+			}
+		}
+		eventID := stringValue(event.ID)
+		if eligibleMarkets > len(markets) {
+			truncation = append(truncation, Truncation{Path: fmt.Sprintf("events.%s.markets", eventID), SourceCount: eligibleMarkets, EmittedCount: len(markets)})
 		}
 		events = append(events, MarketEvent{
-			ID: stringValue(event.ID), Title: event.Title, Slug: event.Slug, Active: event.Active, Closed: event.Closed,
+			ID: eventID, Title: event.Title, Slug: event.Slug, Active: event.Active, Closed: event.Closed,
 			EndDate: event.EndDate, Volume: numberValue(event.Volume), Liquidity: numberValue(event.Liquidity), Markets: markets,
 		})
 	}
 	return MarketSearchResult{
-		Source: "polymarket-public-api", FetchedAt: time.Now().UTC().Format(time.RFC3339), Query: queryText, Events: events,
+		Source: "polymarket-public-api", FetchedAt: time.Now().UTC().Format(time.RFC3339), Query: queryText, Events: events, Truncation: truncation,
 	}, nil
 }
 
 type OrderBookResult struct {
-	Source    string         `json:"source"`
-	FetchedAt string         `json:"fetchedAt"`
-	Book      map[string]any `json:"book"`
+	Source     string         `json:"source"`
+	FetchedAt  string         `json:"fetchedAt"`
+	Book       map[string]any `json:"book"`
+	Truncation []Truncation   `json:"truncation,omitempty"`
 }
 
 func (c *Client) GetOrderBook(ctx context.Context, tokenID string) (OrderBookResult, error) {
+	tokenID, err := validateDecimalToken(tokenID)
+	if err != nil {
+		return OrderBookResult{}, err
+	}
 	endpoint := "https://clob.polymarket.com/book?" + url.Values{"token_id": {tokenID}}.Encode()
 	book := map[string]any{}
 	if _, err := c.GetJSON(ctx, endpoint, nil, &book, false); err != nil {
 		return OrderBookResult{}, err
 	}
-	return OrderBookResult{Source: "polymarket-clob", FetchedAt: time.Now().UTC().Format(time.RFC3339), Book: book}, nil
+	truncation := truncateOrderBook(book)
+	return OrderBookResult{Source: "polymarket-clob", FetchedAt: time.Now().UTC().Format(time.RFC3339), Book: book, Truncation: truncation}, nil
+}
+
+func truncateOrderBook(book map[string]any) []Truncation {
+	truncation := []Truncation{}
+	for _, side := range []string{"bids", "asks"} {
+		levels, ok := book[side].([]any)
+		if !ok || len(levels) <= MaximumOrderBookLevels {
+			continue
+		}
+		book[side] = levels[:MaximumOrderBookLevels]
+		truncation = append(truncation, Truncation{Path: "book." + side, SourceCount: len(levels), EmittedCount: MaximumOrderBookLevels})
+	}
+	return truncation
 }

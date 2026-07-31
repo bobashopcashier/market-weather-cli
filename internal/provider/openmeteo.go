@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -54,14 +55,18 @@ func parseCoordinates(input string) (Location, bool, error) {
 	if latErr != nil || lonErr != nil {
 		return Location{}, false, nil
 	}
-	if lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+	if math.IsNaN(lat) || math.IsInf(lat, 0) || math.IsNaN(lon) || math.IsInf(lon, 0) || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
 		return Location{}, true, NewError("invalid_arguments", "coordinates are outside the valid latitude/longitude range", 2)
 	}
 	return Location{Name: fmt.Sprintf("%g,%g", lat, lon), Latitude: lat, Longitude: lon, Timezone: "auto"}, true, nil
 }
 
 func (c *Client) ResolveLocation(ctx context.Context, input string) (Location, error) {
-	if location, matched, err := parseCoordinates(strings.TrimSpace(input)); matched || err != nil {
+	input, err := validateFreeText("location", input, 256)
+	if err != nil {
+		return Location{}, err
+	}
+	if location, matched, err := parseCoordinates(input); matched || err != nil {
 		return location, err
 	}
 	query := url.Values{"name": {input}, "count": {"1"}, "language": {"en"}, "format": {"json"}}

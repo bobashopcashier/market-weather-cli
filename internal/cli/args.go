@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -17,12 +18,17 @@ const (
 )
 
 type optionSpec struct {
-	kind       optionKind
-	alias      string
-	defaultVal string
-	choices    []string
-	min        int
-	max        int
+	kind        optionKind
+	alias       string
+	defaultVal  string
+	choices     []string
+	min         int
+	max         int
+	maxLength   int
+	pattern     string
+	format      string
+	normalize   string
+	description string
 }
 
 type parsedArgs struct {
@@ -32,11 +38,13 @@ type parsedArgs struct {
 }
 
 var globalOptions = map[string]optionSpec{
-	"help": {kind: boolOption, alias: "h"},
-	"json": {kind: boolOption, alias: "j"},
+	"help":    {kind: boolOption, alias: "h", description: "Show command help"},
+	"json":    {kind: boolOption, alias: "j", description: "Emit stable machine-readable JSON"},
+	"fields":  {kind: stringOption, maxLength: maximumFieldMaskBytes, description: "Project JSON output using comma-separated field paths"},
+	"compact": {kind: boolOption, description: "Emit single-line JSON"},
 }
 
-func parseArgs(argv []string, commandSpec map[string]optionSpec) (parsedArgs, error) {
+func parseArgs(argv []string, commandSpec map[string]optionSpec, jsonDefault ...bool) (parsedArgs, error) {
 	spec := map[string]optionSpec{}
 	aliases := map[string]string{}
 	for name, value := range globalOptions {
@@ -51,6 +59,10 @@ func parseArgs(argv []string, commandSpec map[string]optionSpec) (parsedArgs, er
 		}
 	}
 	parsed := parsedArgs{values: map[string]string{}, bools: map[string]bool{}}
+	seenOptions := map[string]bool{}
+	if len(jsonDefault) > 0 && jsonDefault[0] || strings.EqualFold(strings.TrimSpace(os.Getenv("MWX_OUTPUT")), "json") {
+		parsed.bools["json"] = true
+	}
 	passthrough := false
 	for index := 0; index < len(argv); index++ {
 		token := argv[index]
@@ -78,6 +90,10 @@ func parseArgs(argv []string, commandSpec map[string]optionSpec) (parsedArgs, er
 			if hasInline {
 				return parsed, provider.NewError("invalid_arguments", fmt.Sprintf("--%s does not take a value", name), 2)
 			}
+			if seenOptions[name] {
+				return parsed, provider.NewError("invalid_arguments", fmt.Sprintf("duplicate option: --%s", name), 2)
+			}
+			seenOptions[name] = true
 			parsed.bools[name] = true
 			continue
 		}
@@ -98,12 +114,19 @@ func parseArgs(argv []string, commandSpec map[string]optionSpec) (parsedArgs, er
 		if len(option.choices) > 0 && !contains(option.choices, value) {
 			return parsed, provider.NewError("invalid_arguments", fmt.Sprintf("--%s must be one of: %s", name, strings.Join(option.choices, ", ")), 2)
 		}
+		if seenOptions[name] {
+			return parsed, provider.NewError("invalid_arguments", fmt.Sprintf("duplicate option: --%s", name), 2)
+		}
+		seenOptions[name] = true
 		parsed.values[name] = value
 	}
 	for name, option := range commandSpec {
 		if _, ok := parsed.values[name]; !ok && option.defaultVal != "" {
 			parsed.values[name] = option.defaultVal
 		}
+	}
+	if (parsed.value("fields") != "" || parsed.flag("compact")) && !parsed.flag("json") {
+		return parsed, provider.NewError("invalid_arguments", "--fields and --compact require JSON output; add --json or set MWX_OUTPUT=json", 2)
 	}
 	return parsed, nil
 }
@@ -133,4 +156,13 @@ func required(values []string, index int, label string) (string, error) {
 		return "", err
 	}
 	return values[index], nil
+}
+
+func rejectExtraPositionals(values []string, maximum int, usage string) error {
+	if len(values) <= maximum {
+		return nil
+	}
+	err := provider.NewError("invalid_arguments", fmt.Sprintf("too many positional arguments for %s", usage), 2)
+	err.Hint = "Run the command with --help for the accepted arguments."
+	return err
 }

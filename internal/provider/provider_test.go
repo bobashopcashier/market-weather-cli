@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -33,6 +36,16 @@ func TestNormalizeStations(t *testing.T) {
 	if _, err := NormalizeStations([]string{"not-a-station"}); err == nil {
 		t.Fatal("expected invalid station error")
 	}
+	if _, err := NormalizeStation("KSFO,KJFK"); err == nil {
+		t.Fatal("single-station validation accepted a list")
+	}
+	many := make([]string, 51)
+	for index := range many {
+		many[index] = fmt.Sprintf("X%03d", index)
+	}
+	if _, err := NormalizeStations(many); err == nil {
+		t.Fatal("station limit was not enforced")
+	}
 }
 
 func TestParseCoordinates(t *testing.T) {
@@ -45,6 +58,23 @@ func TestParseCoordinates(t *testing.T) {
 	}
 	if _, _, err := parseCoordinates("91,0"); err == nil {
 		t.Fatal("expected bounds error")
+	}
+	for _, input := range []string{"NaN,0", "0,Inf", "-Inf,0"} {
+		if _, matched, err := parseCoordinates(input); !matched || err == nil {
+			t.Fatalf("unsafe coordinate %q: matched=%v err=%v", input, matched, err)
+		}
+	}
+}
+
+func TestWethrRejectsUnsafeParametersBeforeCredentials(t *testing.T) {
+	client := NewClient()
+	for _, values := range []url.Values{
+		{"model": {"HRRR?x=1"}}, {"run": {"latest#fragment"}}, {"window": {"%33%30d"}},
+		{"date": {"07/31/2026"}}, {"window": {"forever"}},
+	} {
+		if _, err := client.CallWethr(context.Background(), "forecasts", values); err == nil {
+			t.Fatalf("accepted unsafe values: %#v", values)
+		}
 	}
 }
 
@@ -85,6 +115,87 @@ func TestHTTPErrorRedactsReflectedSecret(t *testing.T) {
 	}
 }
 
+func TestProviderResponseSizeBoundary(t *testing.T) {
+	makeBody := func(size int) string {
+		return `{"x":"` + strings.Repeat("a", size-8) + `"}`
+	}
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(makeBody(MaximumProviderResponseBytes))), Header: make(http.Header)}, nil
+	})}}
+	var target map[string]any
+	if _, err := client.GetJSON(context.Background(), "https://example.test/data", nil, &target, false); err != nil {
+		t.Fatalf("exact boundary failed: %v", err)
+	}
+	client.HTTP.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(makeBody(MaximumProviderResponseBytes + 1))), Header: make(http.Header)}, nil
+	})
+	_, err := client.GetJSON(context.Background(), "https://example.test/data", nil, &target, false)
+	appErr, ok := err.(*Error)
+	if !ok || appErr.Code != "provider_response_too_large" {
+		t.Fatalf("oversized response error = %#v", err)
+	}
+}
+
+func TestUnsafeProviderInputsFailBeforeTransportOrCredentials(t *testing.T) {
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("transport called for unsafe input: %s", request.URL)
+		return nil, nil
+	})}}
+	if _, err := client.GetOrderBook(context.Background(), "123?fields=name"); err == nil {
+		t.Fatal("unsafe token was accepted")
+	}
+	if _, err := client.SearchMarkets(context.Background(), "weather\x1b[31m", 5, false); err == nil {
+		t.Fatal("control character in query was accepted")
+	}
+	if _, err := client.GetPWSCurrent(context.Background(), "ABC?units=e", "e"); err == nil {
+		t.Fatal("unsafe PWS station was accepted")
+	}
+}
+
+func TestAgentOrientedIdentifierValidation(t *testing.T) {
+	for _, token := range []string{"123?fields=name", "123#fragment", "%31%32%33", "123\x1b"} {
+		if _, err := validateDecimalToken(token); err == nil {
+			t.Errorf("accepted unsafe token %q", token)
+		}
+	}
+	if token, err := validateDecimalToken("1234567890"); err != nil || token != "1234567890" {
+		t.Fatalf("valid token = %q, err = %v", token, err)
+	}
+	for _, station := range []string{"ABC?units=e", "ABC#x", "ABC%2FDEF", "ABC DEF", "ABC\x00"} {
+		if _, err := validatePWSStation(station); err == nil {
+			t.Errorf("accepted unsafe PWS station %q", station)
+		}
+	}
+}
+
+func TestPolymarketNestedCollectionsAreBoundedWithMetadata(t *testing.T) {
+	markets := make([]rawMarket, MaximumMarketsPerEvent+1)
+	for index := range markets {
+		markets[index] = rawMarket{ID: index, Active: true, Question: fmt.Sprintf("market %d", index)}
+	}
+	payload, err := json.Marshal(rawSearch{Events: []rawEvent{{ID: "event-1", Active: true, Markets: markets}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(payload))), Header: make(http.Header)}, nil
+	})}}
+	result, err := client.SearchMarkets(context.Background(), "weather", 5, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 || len(result.Events[0].Markets) != MaximumMarketsPerEvent || len(result.Truncation) != 1 {
+		t.Fatalf("market bounds were not reported: %#v", result)
+	}
+
+	levels := make([]any, MaximumOrderBookLevels+1)
+	book := map[string]any{"bids": append([]any(nil), levels...), "asks": append([]any(nil), levels...)}
+	truncation := truncateOrderBook(book)
+	if len(book["bids"].([]any)) != MaximumOrderBookLevels || len(book["asks"].([]any)) != MaximumOrderBookLevels || len(truncation) != 2 {
+		t.Fatalf("order-book bounds were not reported: book=%#v truncation=%#v", book, truncation)
+	}
+}
+
 func TestDecodeStringList(t *testing.T) {
 	encoded := decodeStringList([]byte(`"[\"Yes\",\"No\"]"`))
 	if strings.Join(encoded, ",") != "Yes,No" {
@@ -94,4 +205,20 @@ func TestDecodeStringList(t *testing.T) {
 	if strings.Join(direct, ",") != "A,B" {
 		t.Fatalf("unexpected direct list: %#v", direct)
 	}
+}
+
+func FuzzResourceIdentifiers(f *testing.F) {
+	for _, seed := range []string{"123", "KMAHANOV10", "?fields=name", "%2e%2e", "abc\x00def", "abc#fragment", "../../.ssh"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		token, tokenErr := validateDecimalToken(value)
+		if tokenErr == nil && !decimalTokenPattern.MatchString(token) {
+			t.Fatalf("accepted token does not match grammar: %q", token)
+		}
+		station, stationErr := validatePWSStation(value)
+		if stationErr == nil && !pwsStationPattern.MatchString(station) {
+			t.Fatalf("accepted station does not match grammar: %q", station)
+		}
+	})
 }
