@@ -1,6 +1,6 @@
 package cli
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 const rootHelp = `mwx: prediction-market, weather, and dataframe command-line tools
 
@@ -8,6 +8,7 @@ Usage:
   mwx <tool> [arguments] [options]
 
 Tools:
+  schema        Machine-readable runtime command schemas
   betmoar       Public Polymarket discovery and order books
   metar         NOAA Aviation Weather Center observations
   wethr         Wethr.net v2 observations and model analytics
@@ -21,6 +22,11 @@ Tools:
 Provider tools are also installed as their own executables, and data is
 installed as dataframe. Use --json for stable, machine-readable provider
 output. API keys are read only from environment variables.
+
+Agent discovery:
+  mwx schema
+  mwx schema data query
+  dataframe schema query
 `
 
 var toolHelp = map[string]string{
@@ -113,6 +119,7 @@ Usage:
 
 Input:
   --input-format auto|csv|json|jsonl   Detect by extension/content by default
+  --input-root DIR                     Restrict file reads to DIR (or MWX_INPUT_ROOT)
   --path /json/pointer                 Select a nested JSON array or object
   --layout auto|records|columns        Interpret JSON records or column arrays
   --strings                            Keep CSV fields as strings
@@ -120,6 +127,9 @@ Input:
 Output:
   --output json|csv|table              JSON is the composable default
   --json                               Alias for --output json
+  --fields NAME[,NAME...]              Project final table columns
+  --limit N                            Bound final JSON table rows
+  --compact                            Emit single-line JSON
 
 Notebook operations:
   read-csv       columns        head            tail
@@ -154,5 +164,10 @@ Usage:
   dataframe <operation> [input|-] [options]
 
 Run mwx data --help for the full operation list and examples.
+`,
+	"providers": `providers: provider readiness without exposing credential values
+
+Usage:
+  mwx providers [--json]
 `,
 }

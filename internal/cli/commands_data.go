@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,44 +15,10 @@ import (
 	"github.com/bobashopcashier/market-weather-cli/internal/render"
 )
 
-var dataOptions = map[string]optionSpec{
-	"input":         {kind: stringOption, alias: "i"},
-	"input-format":  {kind: stringOption, defaultVal: "auto", choices: []string{"auto", "csv", "json", "jsonl"}},
-	"path":          {kind: stringOption},
-	"layout":        {kind: stringOption, defaultVal: "auto", choices: []string{"auto", "records", "columns"}},
-	"strings":       {kind: boolOption},
-	"output":        {kind: stringOption, alias: "o", defaultVal: "json", choices: []string{"json", "csv", "table"}},
-	"n":             {kind: intOption, alias: "n", defaultVal: "5"},
-	"column":        {kind: stringOption, alias: "c"},
-	"columns":       {kind: stringOption},
-	"include":       {kind: stringOption},
-	"exclude":       {kind: stringOption},
-	"dtype":         {kind: stringOption},
-	"include-null":  {kind: boolOption},
-	"sum":           {kind: boolOption},
-	"subset":        {kind: stringOption},
-	"keep":          {kind: stringOption, defaultVal: "first", choices: []string{"first", "last", "none"}},
-	"mapping":       {kind: stringOption},
-	"keep-unmapped": {kind: boolOption},
-	"expr":          {kind: stringOption},
-	"values":        {kind: stringOption},
-	"strategy":      {kind: stringOption, defaultVal: "literal", choices: []string{"literal", "mean", "mode"}},
-	"value":         {kind: stringOption},
-	"how":           {kind: stringOption, defaultVal: "any", choices: []string{"any", "all"}},
-	"by":            {kind: stringOption},
-	"agg":           {kind: stringOption},
-	"descending":    {kind: boolOption},
-	"nulls-first":   {kind: boolOption},
-	"where":         {kind: stringOption},
-	"rows":          {kind: stringOption},
-	"cols":          {kind: stringOption},
-	"bins":          {kind: stringOption},
-	"labels":        {kind: stringOption},
-	"output-column": {kind: stringOption},
-	"prefix":        {kind: stringOption},
-	"with":          {kind: stringOption},
-	"axis":          {kind: intOption, defaultVal: "0", choices: []string{"0", "1"}},
-}
+const (
+	maxConcatRetainedCells = 5_000_000
+	maxConcatRetainedBytes = 128 << 20
+)
 
 func runData(ctx context.Context, argv []string) error {
 	operation := normalizeDataOperation(argv[0])
@@ -60,7 +27,7 @@ func runData(ctx context.Context, argv []string) error {
 		err.Hint = "Run mwx data --help to list the 35 supported operations."
 		return err
 	}
-	parsed, err := parseArgs(argv[1:], dataOptions)
+	parsed, err := parseArgs(argv[1:], dataOperationOptions(operation))
 	if err != nil {
 		return err
 	}
@@ -71,29 +38,59 @@ func runData(ctx context.Context, argv []string) error {
 	if len(parsed.positionals) > 1 {
 		return dataUsageError("data operations accept at most one positional input path")
 	}
-	frame, err := loadDataFrame(ctx, parsed, argv[1:], operation)
-	if err != nil {
-		return dataInputError(err)
+	if err := validateDataOperationArguments(operation, parsed, argv[1:]); err != nil {
+		return err
 	}
 	output := parsed.value("output")
 	if parsed.flag("json") {
 		output = "json"
 	}
+	if parsed.flag("compact") && output != "json" {
+		return dataUsageError("--compact requires JSON output")
+	}
+	if parsed.value("limit") != "" && output != "json" {
+		return dataUsageError("--limit requires JSON output so truncation metadata is preserved")
+	}
+	frame, err := loadDataFrame(ctx, parsed, argv[1:], operation)
+	if err != nil {
+		return dataInputError(err)
+	}
 	writeFrame := func(result dataframe.Frame) error {
-		if err := dataframe.Write(os.Stdout, result, dataframe.OutputOptions{Format: output}); err != nil {
+		sourceRows := len(result.Rows)
+		fields := dataframe.SplitList(parsed.value("fields"))
+		if len(fields) > 0 {
+			result, err = dataframe.SelectColumns(result, fields)
+			if err != nil {
+				return dataOperationError(err)
+			}
+		}
+		if limit := parsed.integer("limit"); limit > 0 && len(result.Rows) > limit {
+			result = dataframe.Head(result, limit)
+		}
+		if err := dataframe.Write(os.Stdout, result, dataframe.OutputOptions{
+			Format: output, Compact: parsed.flag("compact"), SourceRowCount: sourceRows,
+		}); err != nil {
 			return dataInputError(err)
 		}
 		return nil
 	}
+	var structuredMeta map[string]any
 	writeResult := func(value any) error {
 		if output != "json" {
 			return dataUsageError(fmt.Sprintf("%s produces structured JSON and does not support --output %s", operation, output))
 		}
-		return render.JSON(os.Stdout, map[string]any{
+		valueEnvelope := map[string]any{
 			"schemaVersion": "mwx.result/v1",
 			"operation":     operation,
 			"data":          value,
-		})
+		}
+		if structuredMeta != nil {
+			valueEnvelope["meta"] = structuredMeta
+		}
+		if parsed.flag("compact") {
+			return render.CompactJSON(os.Stdout, valueEnvelope)
+		}
+		return render.JSON(os.Stdout, valueEnvelope)
 	}
 
 	switch operation {
@@ -220,9 +217,6 @@ func runData(ctx context.Context, argv []string) error {
 			return operationErr
 		}
 		method := dataframe.FillMethod(parsed.value("strategy"))
-		if method == dataframe.FillLiteral && !optionProvided(argv[1:], "value") {
-			return dataUsageError("fillna --strategy literal requires --value")
-		}
 		result := frame
 		literal := dataframe.ParseScalar(parsed.value("value"))
 		if parsed.flag("strings") {
@@ -333,20 +327,130 @@ func runData(ctx context.Context, argv []string) error {
 		if len(otherPaths) == 0 {
 			return dataUsageError("concat requires --with path[,path...]")
 		}
+		if len(otherPaths) > 64 {
+			return dataUsageError("concat accepts at most 64 additional input files")
+		}
 		frames := []dataframe.Frame{frame}
+		budget := concatInputBudget{}
+		if budgetErr := budget.add(frame); budgetErr != nil {
+			return dataUsageError(budgetErr.Error())
+		}
 		for _, path := range otherPaths {
-			other, loadErr := dataframe.LoadFile(path, loadOptions(parsed, "auto"))
+			other, loadErr := loadDataFile(ctx, path, parsed, "auto")
 			if loadErr != nil {
 				return dataInputError(loadErr)
+			}
+			if budgetErr := budget.add(other); budgetErr != nil {
+				return dataUsageError(budgetErr.Error())
 			}
 			frames = append(frames, other)
 		}
 		result, operationErr := dataframe.Concat(frames, parsed.integer("axis"))
 		return writeFrameResult(result, operationErr, writeFrame)
 	case "to-numpy":
+		sourceRows := len(frame.Rows)
+		if fields := dataframe.SplitList(parsed.value("fields")); len(fields) > 0 {
+			frame, err = dataframe.SelectColumns(frame, fields)
+			if err != nil {
+				return dataOperationError(err)
+			}
+		}
+		if limit := parsed.integer("limit"); limit > 0 && len(frame.Rows) > limit {
+			frame = dataframe.Head(frame, limit)
+			structuredMeta = map[string]any{"rowCount": len(frame.Rows), "sourceRowCount": sourceRows, "truncated": true}
+		}
 		return writeResult(dataframe.ToNumpy(frame))
 	}
 	return dataUsageError("unhandled dataframe operation: " + operation)
+}
+
+type concatInputBudget struct {
+	cells int64
+	bytes int64
+}
+
+func (budget *concatInputBudget) add(frame dataframe.Frame) error {
+	rows, columns := int64(len(frame.Rows)), int64(len(frame.Columns))
+	if rows > 0 && columns > maxConcatRetainedCells/rows {
+		return fmt.Errorf("concat inputs exceed the %d-cell retained-input limit", maxConcatRetainedCells)
+	}
+	cells := rows * columns
+	if budget.cells > maxConcatRetainedCells-cells {
+		return fmt.Errorf("concat inputs exceed the %d-cell retained-input limit", maxConcatRetainedCells)
+	}
+	estimatedBytes := cells * 16
+	for _, column := range frame.Columns {
+		estimatedBytes += int64(len(column))
+	}
+	for _, row := range frame.Rows {
+		for _, value := range row {
+			estimatedBytes += estimateDataValueBytes(value, 0)
+			if estimatedBytes > maxConcatRetainedBytes {
+				return fmt.Errorf("concat inputs exceed the %d MiB retained-input limit", maxConcatRetainedBytes>>20)
+			}
+		}
+	}
+	if budget.bytes > maxConcatRetainedBytes-estimatedBytes {
+		return fmt.Errorf("concat inputs exceed the %d MiB retained-input limit", maxConcatRetainedBytes>>20)
+	}
+	budget.cells += cells
+	budget.bytes += estimatedBytes
+	return nil
+}
+
+func estimateDataValueBytes(value any, depth int) int64 {
+	if depth >= 8 {
+		return 64
+	}
+	switch typed := value.(type) {
+	case string:
+		return int64(len(typed))
+	case json.Number:
+		return int64(len(typed))
+	case []any:
+		total := int64(24)
+		for _, item := range typed {
+			total += 16 + estimateDataValueBytes(item, depth+1)
+		}
+		return total
+	case map[string]any:
+		total := int64(48)
+		for key, item := range typed {
+			total += int64(len(key)) + 32 + estimateDataValueBytes(item, depth+1)
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
+func validateDataOperationArguments(operation string, parsed parsedArgs, argv []string) error {
+	spec := dataOperations[operation]
+	for _, name := range spec.required {
+		if strings.TrimSpace(parsed.value(name)) == "" && !parsed.flag(name) {
+			return dataUsageError(fmt.Sprintf("%s requires --%s", operation, name))
+		}
+	}
+	for _, group := range spec.anyOf {
+		matched := false
+		for _, name := range group {
+			if strings.TrimSpace(parsed.value(name)) != "" || parsed.flag(name) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			formatted := make([]string, len(group))
+			for index, name := range group {
+				formatted[index] = "--" + name
+			}
+			return dataUsageError(fmt.Sprintf("%s requires one of %s", operation, strings.Join(formatted, ", ")))
+		}
+	}
+	if operation == "fillna" && parsed.value("strategy") == "literal" && !optionProvided(argv, "value") {
+		return dataUsageError("fillna --strategy literal requires --value")
+	}
+	return nil
 }
 
 func normalizeDataOperation(operation string) string {
@@ -365,17 +469,8 @@ func normalizeDataOperation(operation string) string {
 }
 
 func isDataOperation(operation string) bool {
-	for _, supported := range []string{
-		"read-csv", "columns", "head", "tail", "shape", "info", "describe", "select-dtypes",
-		"astype", "value-counts", "unique", "nunique", "isnull", "notnull", "duplicated", "drop-duplicates",
-		"rename", "map", "query", "isin", "drop", "fillna", "dropna", "groupby", "agg", "sort-values",
-		"loc", "iloc", "cut", "apply", "profile", "idxmax", "get-dummies", "concat", "to-numpy",
-	} {
-		if operation == supported {
-			return true
-		}
-	}
-	return false
+	_, ok := dataOperations[operation]
+	return ok
 }
 
 func loadDataFrame(ctx context.Context, parsed parsedArgs, argv []string, operation string) (dataframe.Frame, error) {
@@ -397,6 +492,16 @@ func loadDataFrame(ctx context.Context, parsed parsedArgs, argv []string, operat
 	if input == "-" {
 		return loadInterruptibly(ctx, os.Stdin, options)
 	}
+	return loadDataFile(ctx, input, parsed, format)
+}
+
+func loadDataFile(ctx context.Context, input string, parsed parsedArgs, format string) (dataframe.Frame, error) {
+	file, err := openDataInput(input, parsed.value("input-root"))
+	if err != nil {
+		return dataframe.Frame{}, err
+	}
+	defer file.Close()
+	options := loadOptions(parsed, format)
 	if options.Format == "" || options.Format == "auto" {
 		switch strings.ToLower(filepath.Ext(input)) {
 		case ".csv":
@@ -407,12 +512,55 @@ func loadDataFrame(ctx context.Context, parsed parsedArgs, argv []string, operat
 			options.Format = "jsonl"
 		}
 	}
-	file, err := os.Open(input)
-	if err != nil {
-		return dataframe.Frame{}, fmt.Errorf("open dataframe input %q: %w", input, err)
-	}
-	defer file.Close()
 	return loadInterruptibly(ctx, file, options)
+}
+
+func openDataInput(input, configuredRoot string) (*os.File, error) {
+	root := strings.TrimSpace(configuredRoot)
+	if root == "" {
+		root = strings.TrimSpace(os.Getenv("MWX_INPUT_ROOT"))
+	}
+	if root == "" {
+		return os.Open(input)
+	}
+	rootPath, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve dataframe input root: %w", err)
+	}
+	rootPath, err = filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve dataframe input root: %w", err)
+	}
+	rootHandle, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open dataframe input root: %w", err)
+	}
+	defer rootHandle.Close()
+	relative := input
+	if filepath.IsAbs(input) {
+		inputPath, resolveErr := filepath.EvalSymlinks(input)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve dataframe input path: %w", resolveErr)
+		}
+		relative, err = filepath.Rel(rootPath, inputPath)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return nil, fmt.Errorf("dataframe input is outside the configured input root")
+		}
+	}
+	file, err := rootHandle.Open(relative)
+	if err != nil {
+		return nil, fmt.Errorf("open dataframe input within configured root: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("inspect dataframe input: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("dataframe input must be a regular file when an input root is configured")
+	}
+	return file, nil
 }
 
 func loadInterruptibly(ctx context.Context, reader io.ReadCloser, options dataframe.LoadOptions) (dataframe.Frame, error) {
@@ -689,6 +837,9 @@ func parseSlice(value string, length int) (int, int, error) {
 func optionProvided(argv []string, name string) bool {
 	long := "--" + name
 	for _, argument := range argv {
+		if argument == "--" {
+			return false
+		}
 		if argument == long || strings.HasPrefix(argument, long+"=") {
 			return true
 		}

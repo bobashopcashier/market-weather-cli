@@ -23,6 +23,9 @@ var commands = map[string]func(context.Context, []string) error{
 	"open-meteo":   runOpenMeteo,
 	"meteoblue":    runMeteoblue,
 	"wunderground": runWunderground,
+	"providers": func(_ context.Context, argv []string) error {
+		return runProviders(argv)
+	},
 }
 
 func Run(forcedTool string, argv []string) int {
@@ -32,17 +35,20 @@ func Run(forcedTool string, argv []string) int {
 	if err == nil {
 		return 0
 	}
-	jsonOutput := hasArg(argv, "--json") || hasArg(argv, "-j") || dataDefaultsToJSON(forcedTool, argv)
+	jsonOutput := hasArg(argv, "--json") || hasArg(argv, "-j") || dataDefaultsToJSON(forcedTool, argv) || schemaDefaultsToJSON(forcedTool, argv)
 	var appErr *provider.Error
 	if !errors.As(err, &appErr) {
 		appErr = &provider.Error{Code: "internal_error", Message: err.Error(), ExitCode: 1}
 	}
 	if jsonOutput {
-		_ = render.JSON(os.Stderr, map[string]any{"error": appErr})
+		_ = render.JSON(os.Stderr, struct {
+			SchemaVersion string          `json:"schemaVersion"`
+			Error         *provider.Error `json:"error"`
+		}{SchemaVersion: "mwx.error/v1", Error: appErr})
 	} else {
-		fmt.Fprintf(os.Stderr, "error: %s\n", appErr.Message)
+		fmt.Fprintf(os.Stderr, "error: %s\n", render.SafeText(appErr.Message))
 		if appErr.Hint != "" {
-			fmt.Fprintf(os.Stderr, "hint: %s\n", appErr.Hint)
+			fmt.Fprintf(os.Stderr, "hint: %s\n", render.SafeText(appErr.Hint))
 		}
 	}
 	if appErr.ExitCode == 0 {
@@ -51,12 +57,22 @@ func Run(forcedTool string, argv []string) int {
 	return appErr.ExitCode
 }
 
+func schemaDefaultsToJSON(forcedTool string, argv []string) bool {
+	if forcedTool != "" {
+		return len(argv) > 0 && argv[0] == "schema"
+	}
+	return len(argv) > 0 && argv[0] == "schema" || len(argv) > 1 && argv[1] == "schema"
+}
+
 func dataDefaultsToJSON(forcedTool string, argv []string) bool {
 	isData := forcedTool == "data" || forcedTool == "dataframe" || forcedTool == "" && len(argv) > 0 && (argv[0] == "data" || argv[0] == "dataframe")
 	if !isData {
 		return false
 	}
 	for index, argument := range argv {
+		if argument == "--" {
+			break
+		}
 		if strings.HasPrefix(argument, "--output=") || strings.HasPrefix(argument, "-o=") {
 			_, value, _ := strings.Cut(argument, "=")
 			return value == "json"
@@ -69,11 +85,17 @@ func dataDefaultsToJSON(forcedTool string, argv []string) bool {
 }
 
 func execute(ctx context.Context, forcedTool string, argv []string) error {
+	if err := rejectArgumentControls(argv); err != nil {
+		return err
+	}
 	if hasArg(argv, "--version") {
 		fmt.Fprintln(os.Stdout, version)
 		return nil
 	}
 	tool := forcedTool
+	if tool != "" && len(argv) > 0 && argv[0] == "schema" {
+		return runSchema(append([]string{tool}, argv[1:]...))
+	}
 	if tool == "" {
 		if len(argv) == 0 || argv[0] == "help" || argv[0] == "--help" || argv[0] == "-h" {
 			fmt.Fprint(os.Stdout, rootHelp)
@@ -81,9 +103,12 @@ func execute(ctx context.Context, forcedTool string, argv []string) error {
 		}
 		tool = argv[0]
 		argv = argv[1:]
-		if tool == "providers" {
-			return runProviders(argv)
+		if tool == "schema" {
+			return runSchema(argv)
 		}
+	}
+	if len(argv) > 0 && argv[0] == "schema" {
+		return runSchema(append([]string{tool}, argv[1:]...))
 	}
 	command, ok := commands[tool]
 	if !ok {
@@ -95,11 +120,30 @@ func execute(ctx context.Context, forcedTool string, argv []string) error {
 		fmt.Fprint(os.Stdout, toolHelp[tool])
 		return nil
 	}
+	isUpstreamPassthrough := tool == "betmoar" && len(argv) > 0 && argv[0] == "upstream"
+	if !isUpstreamPassthrough && (hasArg(argv, "--help") || hasArg(argv, "-h")) {
+		fmt.Fprint(os.Stdout, toolHelp[tool])
+		return nil
+	}
 	return command(ctx, argv)
+}
+
+func rejectArgumentControls(argv []string) error {
+	for index, argument := range argv {
+		for _, current := range argument {
+			if current < 0x20 || current == 0x7f || current >= 0x80 && current <= 0x9f {
+				return provider.NewError("invalid_arguments", fmt.Sprintf("argument %d contains a control character", index+1), 2)
+			}
+		}
+	}
+	return nil
 }
 
 func hasArg(argv []string, target string) bool {
 	for _, value := range argv {
+		if value == "--" {
+			return false
+		}
 		if value == target || strings.HasPrefix(value, target+"=") {
 			return true
 		}

@@ -61,7 +61,11 @@ func parseCoordinates(input string) (Location, bool, error) {
 }
 
 func (c *Client) ResolveLocation(ctx context.Context, input string) (Location, error) {
-	if location, matched, err := parseCoordinates(strings.TrimSpace(input)); matched || err != nil {
+	input, err := validateFreeText("location", input, 256)
+	if err != nil {
+		return Location{}, err
+	}
+	if location, matched, err := parseCoordinates(input); matched || err != nil {
 		return location, err
 	}
 	query := url.Values{"name": {input}, "count": {"1"}, "language": {"en"}, "format": {"json"}}

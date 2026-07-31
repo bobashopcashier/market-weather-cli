@@ -21,6 +21,7 @@ The input defaults to `-`, which means standard input.
 |---|---|
 | `--input`, `-i` | Input path, as an alternative to the positional path |
 | `--input-format auto|csv|json|jsonl` | Input decoder, detected by extension or content by default |
+| `--input-root DIR` | Restrict reads to a user-approved directory; also available as `MWX_INPUT_ROOT` |
 | `--path /pointer` | RFC 6901 JSON Pointer applied before table decoding |
 | `--layout auto|records|columns` | Interpret JSON as objects per row or arrays per column |
 | `--strings` | Disable CSV scalar inference and keep non-empty fields as strings |
@@ -38,9 +39,14 @@ output preserve it as `+Inf` or `-Inf`.
 |---|---|
 | `--output json|csv|table`, `-o` | Output format, defaults to JSON |
 | `--json`, `-j` | Explicit JSON output |
+| `--fields A,B` | Project final table columns after the operation |
+| `--limit N` | Emit at most N final rows; requires JSON so truncation metadata is preserved |
+| `--compact` | Emit single-line JSON |
 
 `profile`, `idxmax`, and `to-numpy` return structured result documents and
-support JSON output only. Other operations return tables in any output format.
+support JSON output only. `to-numpy` also accepts `--fields` and `--limit`
+before creating its matrix. Other operations return tables in any output
+format.
 
 Table-valued JSON is an ordered, reusable envelope:
 
@@ -58,6 +64,22 @@ Table-valued JSON is an ordered, reusable envelope:
 The CLI accepts that envelope as input, which makes pipelines directly
 round-trippable and deterministic. Types are inferred again from current values
 on each output, so an empty or all-null column is reported as type `null`.
+When `--limit` truncates a table, `meta.truncated` is true and
+`meta.sourceRowCount` records the pre-limit row count.
+
+`--fields` and `--limit` are final output controls, so they work consistently
+across every table-valued operation. Structured results from `profile`,
+`idxmax`, and `to-numpy` support `--compact`, but not table projection.
+
+For agent execution, prefer `MWX_INPUT_ROOT` or `--input-root`. The root is
+opened as a capability, symlink and traversal escapes are rejected during the
+open, and only regular files inside it can be read. Standard input (`-`)
+remains allowed. Without an input root, the CLI retains normal local-tool
+behavior and accepts arbitrary readable paths.
+
+High-amplification `get-dummies` and `concat` results are capped at five
+million cells. `concat` also enforces cumulative retained-input limits of five
+million cells and approximately 128 MiB, with no more than 64 additional files.
 
 ## All 35 operations
 

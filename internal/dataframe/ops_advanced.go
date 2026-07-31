@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const maxOperationCells = 5_000_000
+
 type ColumnInfo struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
@@ -428,6 +430,9 @@ func GetDummies(frame Frame, columns []string, prefix string) (Frame, error) {
 			dummies = append(dummies, dummy{columnIndex: columnIndex, value: value, name: name})
 		}
 	}
+	if err := validateOperationCells(len(frame.Rows), len(resultColumns), "get-dummies"); err != nil {
+		return Frame{}, err
+	}
 	rows := make([][]any, len(frame.Rows))
 	for rowIndex, row := range frame.Rows {
 		output := make([]any, 0, len(resultColumns))
@@ -464,6 +469,13 @@ func Concat(frames []Frame, axis int) (Frame, error) {
 				}
 			}
 		}
+		rowCount := 0
+		for _, frame := range frames {
+			rowCount += len(frame.Rows)
+		}
+		if err := validateOperationCells(rowCount, len(columns), "concat"); err != nil {
+			return Frame{}, err
+		}
 		rows := make([][]any, 0)
 		for _, frame := range frames {
 			indexes := make(map[string]int, len(frame.Columns))
@@ -497,6 +509,9 @@ func Concat(frames []Frame, axis int) (Frame, error) {
 				columns = append(columns, name)
 			}
 		}
+		if err := validateOperationCells(rowCount, len(columns), "concat"); err != nil {
+			return Frame{}, err
+		}
 		rows := make([][]any, rowCount)
 		for rowIndex := 0; rowIndex < rowCount; rowIndex++ {
 			row := make([]any, 0, len(columns))
@@ -513,6 +528,13 @@ func Concat(frames []Frame, axis int) (Frame, error) {
 	default:
 		return Frame{}, fmt.Errorf("axis must be 0 or 1")
 	}
+}
+
+func validateOperationCells(rows, columns int, operation string) error {
+	if rows > 0 && columns > maxOperationCells/rows {
+		return fmt.Errorf("%s result exceeds the %d-cell safety limit", operation, maxOperationCells)
+	}
+	return nil
 }
 
 func nextAvailableName(original string, used map[string]struct{}) string {

@@ -17,8 +17,44 @@ dataframe     Pandas-style CSV, JSON, and JSONL transformations
 ```
 
 The binaries use only the Go standard library. They have stable `--json`
-output, explicit exit codes, timeouts, credential redaction, and no shell-based
-API calls.
+output, runtime command schemas, strict operation-specific options, explicit
+exit codes, timeouts, credential redaction, and no shell-based API calls.
+
+## Agent-safe discovery
+
+The CLI is self-describing. A bare schema request returns a compact index, and
+an exact path returns the accepted positionals, options, defaults, ranges,
+effects, credentials, and output formats.
+
+```bash
+mwx schema
+mwx schema metar
+mwx schema wethr.forecast
+mwx schema data.query
+dataframe schema groupby
+```
+
+Dataframe results can be projected and bounded after any table operation:
+
+```bash
+metar KSFO KJFK KLAX --json \
+  | mwx data head - --path /observations \
+      --fields icaoId,reportTime,temp --limit 10 --compact
+```
+
+For agent-controlled file reads, set an explicit boundary. Relative paths are
+resolved within the boundary. The directory is opened as a filesystem
+capability, and absolute, traversal, symlink, and non-regular file escapes are
+rejected during the open.
+
+```bash
+MWX_INPUT_ROOT="$PWD/data" dataframe describe passengers.csv --compact
+# Equivalent: dataframe describe passengers.csv --input-root "$PWD/data"
+```
+
+See [CONTEXT.md](CONTEXT.md) and
+[skills/market-weather-cli/SKILL.md](skills/market-weather-cli/SKILL.md) for the
+agent invariants shipped with the repository.
 
 ## Install
 
@@ -98,7 +134,10 @@ open-meteo "San Francisco" --json \
 
 JSON is the default so commands compose without adapters. Table-valued output
 uses the versioned `mwx.table/v1` envelope with ordered columns, current inferred
-types, and rows. Use `--output csv` or `--output table` at the end of a pipeline.
+types, and rows. Use `--fields` and JSON `--limit` to protect context size, and
+`--compact` for single-line JSON. A limited result declares `truncated` and its
+original row count in `meta`. Use `--output csv` or `--output table` at the end
+of a pipeline.
 
 See [docs/dataframe.md](docs/dataframe.md) for the 35-operation mapping,
 complete option reference, expression syntax, and more examples.
@@ -172,10 +211,12 @@ output, errors have this shape:
 
 ```json
 {
+  "schemaVersion": "mwx.error/v1",
   "error": {
     "code": "not_configured",
     "message": "WETHR_API_KEY is required for Wethr.net",
-    "hint": "Set WETHR_API_KEY in the environment. API keys are never accepted as command arguments."
+    "hint": "Set WETHR_API_KEY in the environment. API keys are never accepted as command arguments.",
+    "exitCode": 2
   }
 }
 ```

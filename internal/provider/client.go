@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const userAgent = "market-weather-cli/0.1.0"
+const userAgent = "market-weather-cli/0.3.0"
 
 type Client struct {
 	HTTP *http.Client

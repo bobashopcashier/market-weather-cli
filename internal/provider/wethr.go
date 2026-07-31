@@ -21,16 +21,23 @@ type WethrResult struct {
 }
 
 func WethrStation(input string) (string, error) {
-	stations, err := NormalizeStations([]string{input})
-	if err != nil {
-		return "", err
-	}
-	return stations[0], nil
+	return NormalizeStation(input)
 }
 
 func (c *Client) CallWethr(ctx context.Context, endpoint string, params url.Values) (WethrResult, error) {
 	if !wethrEndpoints[endpoint] {
 		return WethrResult{}, NewError("invalid_arguments", fmt.Sprintf("unsupported Wethr endpoint: %s", endpoint), 2)
+	}
+	for name, values := range params {
+		for _, value := range values {
+			value, err := validateFreeText("Wethr parameter "+name, value, 512)
+			if err != nil {
+				return WethrResult{}, err
+			}
+			if strings.ContainsAny(value, "?#%") {
+				return WethrResult{}, NewError("invalid_arguments", "Wethr parameters cannot contain query fragments or pre-encoded values", 2)
+			}
+		}
 	}
 	key, err := requiredEnv("WETHR_API_KEY", "Wethr.net")
 	if err != nil {

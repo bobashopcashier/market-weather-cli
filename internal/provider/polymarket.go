@@ -142,6 +142,10 @@ func normalizeMarket(raw rawMarket) Market {
 }
 
 func (c *Client) SearchMarkets(ctx context.Context, queryText string, limit int, includeClosed bool) (MarketSearchResult, error) {
+	queryText, err := validateFreeText("market search query", queryText, 512)
+	if err != nil {
+		return MarketSearchResult{}, err
+	}
 	status := "active"
 	if includeClosed {
 		status = "all"
@@ -187,6 +191,10 @@ type OrderBookResult struct {
 }
 
 func (c *Client) GetOrderBook(ctx context.Context, tokenID string) (OrderBookResult, error) {
+	tokenID, err := validateDecimalToken(tokenID)
+	if err != nil {
+		return OrderBookResult{}, err
+	}
 	endpoint := "https://clob.polymarket.com/book?" + url.Values{"token_id": {tokenID}}.Encode()
 	book := map[string]any{}
 	if _, err := c.GetJSON(ctx, endpoint, nil, &book, false); err != nil {

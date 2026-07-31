@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -13,10 +14,7 @@ import (
 )
 
 func runMETAR(ctx context.Context, argv []string) error {
-	parsed, err := parseArgs(argv, map[string]optionSpec{
-		"hours": {kind: intOption, defaultVal: "2", min: 1, max: 360},
-		"raw":   {kind: boolOption},
-	})
+	parsed, err := parseArgs(argv, metarOptions)
 	if err != nil {
 		return err
 	}
@@ -38,14 +36,14 @@ func runMETAR(ctx context.Context, argv []string) error {
 			fmt.Fprintln(os.Stdout)
 		}
 		if parsed.flag("raw") {
-			fmt.Fprintln(os.Stdout, observation.Raw)
+			fmt.Fprintln(os.Stdout, render.SafeText(observation.Raw))
 			continue
 		}
-		fmt.Fprintf(os.Stdout, "%s  %s  %s\n", observation.ICAOID, observation.ReportTime, observation.FlightCat)
+		fmt.Fprintf(os.Stdout, "%s  %s  %s\n", render.SafeText(observation.ICAOID), render.SafeText(observation.ReportTime), render.SafeText(observation.FlightCat))
 		fmt.Fprintf(os.Stdout, "  temperature %s°C  dewpoint %s°C  wind %s° at %s kt  visibility %s sm\n",
 			pointerNumber(observation.Temperature), pointerNumber(observation.Dewpoint), render.Text(observation.WindDir),
 			pointerNumber(observation.WindSpeed), render.Text(observation.Visibility))
-		fmt.Fprintf(os.Stdout, "  %s\n", observation.Raw)
+		fmt.Fprintf(os.Stdout, "  %s\n", render.SafeText(observation.Raw))
 	}
 	return nil
 }
@@ -58,11 +56,7 @@ func pointerNumber(value *float64) string {
 }
 
 func runOpenMeteo(ctx context.Context, argv []string) error {
-	parsed, err := parseArgs(argv, map[string]optionSpec{
-		"days":   {kind: intOption, defaultVal: "7", min: 1, max: 16},
-		"unit":   {kind: stringOption, defaultVal: "f", choices: []string{"f", "c"}},
-		"hourly": {kind: boolOption},
-	})
+	parsed, err := parseArgs(argv, openMeteoOptions)
 	if err != nil {
 		return err
 	}
@@ -88,7 +82,7 @@ func printForecast(result provider.ForecastResult) {
 	if result.Location.Admin1 != "" {
 		locationLabel += ", " + result.Location.Admin1
 	}
-	fmt.Fprintf(os.Stdout, "%s  (%g, %g)\n", locationLabel, result.Location.Latitude, result.Location.Longitude)
+	fmt.Fprintf(os.Stdout, "%s  (%g, %g)\n", render.SafeText(locationLabel), result.Location.Latitude, result.Location.Longitude)
 	fmt.Fprintf(os.Stdout, "Now: %s%s, feels like %s%s, %s, wind %s %s\n\n",
 		render.Number(current["temperature_2m"], 1), unit, render.Number(current["apparent_temperature"], 1), unit,
 		render.WeatherCode(current["weather_code"]), render.Number(current["wind_speed_10m"], 1), result.Units["wind"])
@@ -133,10 +127,11 @@ func runBetmoar(ctx context.Context, argv []string) error {
 		}
 		return nil
 	}
-	parsed, err := parseArgs(argv[1:], map[string]optionSpec{
-		"limit":  {kind: intOption, defaultVal: "5", min: 1, max: 50},
-		"closed": {kind: boolOption},
-	})
+	commandOptions, ok := betmoarOptions[argv[0]]
+	if !ok {
+		return provider.NewError("invalid_arguments", fmt.Sprintf("unknown betmoar command: %s", argv[0]), 2)
+	}
+	parsed, err := parseArgs(argv[1:], commandOptions)
 	if err != nil {
 		return err
 	}
@@ -155,6 +150,9 @@ func runBetmoar(ctx context.Context, argv []string) error {
 		printMarketSearch(result)
 		return nil
 	case "book":
+		if err := rejectExtraPositionals(parsed.positionals, 1, "betmoar book"); err != nil {
+			return err
+		}
 		tokenID, err := required(parsed.positionals, 0, "token ID")
 		if err != nil {
 			return err
@@ -178,7 +176,7 @@ func printMarketSearch(result provider.MarketSearchResult) {
 		if eventIndex > 0 {
 			fmt.Fprintln(os.Stdout)
 		}
-		fmt.Fprintf(os.Stdout, "%s\nhttps://polymarket.com/event/%s\n", event.Title, event.Slug)
+		fmt.Fprintf(os.Stdout, "%s\nhttps://polymarket.com/event/%s\n", render.SafeText(event.Title), url.PathEscape(event.Slug))
 		rows := [][]string{}
 		for _, market := range event.Markets {
 			price := "n/a"
@@ -213,16 +211,15 @@ type polyweatherResult struct {
 }
 
 func runPolyweather(ctx context.Context, argv []string) error {
-	parsed, err := parseArgs(argv, map[string]optionSpec{
-		"days":   {kind: intOption, defaultVal: "3", min: 1, max: 16},
-		"unit":   {kind: stringOption, defaultVal: "f", choices: []string{"f", "c"}},
-		"market": {kind: stringOption},
-		"limit":  {kind: intOption, defaultVal: "3", min: 1, max: 10},
-	})
+	parsed, err := parseArgs(argv, polyweatherOptions)
 	if err != nil {
 		return err
 	}
 	station, err := required(parsed.positionals, 0, "ICAO station")
+	if err != nil {
+		return err
+	}
+	station, err = provider.NormalizeStation(station)
 	if err != nil {
 		return err
 	}
@@ -279,9 +276,9 @@ func runPolyweather(ctx context.Context, argv []string) error {
 	if parsed.flag("json") {
 		return render.JSON(os.Stdout, result)
 	}
-	fmt.Fprintf(os.Stdout, "%s weather-market desk  (%s)\n\n", city, strings.ToUpper(station))
-	fmt.Fprintf(os.Stdout, "METAR %s: %s°C, wind %s° at %s kt\n%s\n\n", observation.ReportTime,
-		pointerNumber(observation.Temperature), render.Text(observation.WindDir), pointerNumber(observation.WindSpeed), observation.Raw)
+	fmt.Fprintf(os.Stdout, "%s weather-market desk  (%s)\n\n", render.SafeText(city), strings.ToUpper(station))
+	fmt.Fprintf(os.Stdout, "METAR %s: %s°C, wind %s° at %s kt\n%s\n\n", render.SafeText(observation.ReportTime),
+		pointerNumber(observation.Temperature), render.Text(observation.WindDir), pointerNumber(observation.WindSpeed), render.SafeText(observation.Raw))
 	printForecast(forecast.value)
 	fmt.Fprintln(os.Stdout, "\nPolymarket")
 	printMarketSearch(markets.value)
@@ -303,6 +300,9 @@ func inferCity(name string) string {
 func runProviders(argv []string) error {
 	parsed, err := parseArgs(argv, map[string]optionSpec{})
 	if err != nil {
+		return err
+	}
+	if err := rejectExtraPositionals(parsed.positionals, 0, "providers"); err != nil {
 		return err
 	}
 	_, upstreamErr := exec.LookPath("polymarket")

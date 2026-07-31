@@ -26,7 +26,9 @@ type LoadOptions struct {
 
 // OutputOptions controls how a Frame is encoded.
 type OutputOptions struct {
-	Format string
+	Format         string
+	Compact        bool
+	SourceRowCount int
 }
 
 // Load reads a CSV, JSON, or JSONL table. JSON Path is an RFC 6901 JSON
@@ -106,7 +108,7 @@ func Write(writer io.Writer, frame Frame, options OutputOptions) error {
 	}
 	switch format {
 	case "json":
-		return writeJSON(writer, frame)
+		return writeJSON(writer, frame, options)
 	case "csv":
 		return writeCSV(writer, frame)
 	case "table":
@@ -459,8 +461,10 @@ type columnSchema struct {
 }
 
 type tableMeta struct {
-	RowCount    int `json:"rowCount"`
-	ColumnCount int `json:"columnCount"`
+	RowCount       int  `json:"rowCount"`
+	ColumnCount    int  `json:"columnCount"`
+	SourceRowCount int  `json:"sourceRowCount,omitempty"`
+	Truncated      bool `json:"truncated,omitempty"`
 }
 
 type tableEnvelope struct {
@@ -470,7 +474,7 @@ type tableEnvelope struct {
 	Meta          tableMeta      `json:"meta"`
 }
 
-func writeJSON(writer io.Writer, frame Frame) error {
+func writeJSON(writer io.Writer, frame Frame, options OutputOptions) error {
 	types := frame.ColumnTypes()
 	columns := make([]columnSchema, len(frame.Columns))
 	for index, name := range frame.Columns {
@@ -490,9 +494,15 @@ func writeJSON(writer io.Writer, frame Frame) error {
 		Rows:          rows,
 		Meta:          tableMeta{RowCount: len(frame.Rows), ColumnCount: len(frame.Columns)},
 	}
+	if options.SourceRowCount > len(frame.Rows) {
+		envelope.Meta.SourceRowCount = options.SourceRowCount
+		envelope.Meta.Truncated = true
+	}
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
+	if !options.Compact {
+		encoder.SetIndent("", "  ")
+	}
 	if err := encoder.Encode(envelope); err != nil {
 		return fmt.Errorf("encode JSON dataframe: %w", err)
 	}
@@ -544,15 +554,17 @@ func writeCSV(writer io.Writer, frame Frame) error {
 }
 
 func writeTable(writer io.Writer, frame Frame) error {
+	columns := make([]string, len(frame.Columns))
 	widths := make([]int, len(frame.Columns))
 	for index, column := range frame.Columns {
-		widths[index] = utf8.RuneCountInString(column)
+		columns[index] = safeTableText(column)
+		widths[index] = utf8.RuneCountInString(columns[index])
 	}
 	rows := make([][]string, len(frame.Rows))
 	for rowIndex, row := range frame.Rows {
 		rows[rowIndex] = make([]string, len(row))
 		for columnIndex, value := range row {
-			text := strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(formatCell(value))
+			text := safeTableText(formatCell(value))
 			rows[rowIndex][columnIndex] = text
 			if width := utf8.RuneCountInString(text); width > widths[columnIndex] {
 				widths[columnIndex] = width
@@ -571,7 +583,7 @@ func writeTable(writer io.Writer, frame Frame) error {
 		_, err := fmt.Fprintln(writer, strings.TrimRight(strings.Join(cells, "  "), " "))
 		return err
 	}
-	if err := writeRow(frame.Columns); err != nil {
+	if err := writeRow(columns); err != nil {
 		return fmt.Errorf("encode table header: %w", err)
 	}
 	separators := make([]string, len(widths))
@@ -587,6 +599,27 @@ func writeTable(writer io.Writer, frame Frame) error {
 		}
 	}
 	return nil
+}
+
+func safeTableText(value string) string {
+	var output strings.Builder
+	for _, current := range value {
+		switch current {
+		case '\n':
+			output.WriteString(`\n`)
+		case '\r':
+			output.WriteString(`\r`)
+		case '\t':
+			output.WriteString(`\t`)
+		default:
+			if current < 0x20 || current == 0x7f || current >= 0x80 && current <= 0x9f {
+				fmt.Fprintf(&output, `\u%04x`, current)
+			} else {
+				output.WriteRune(current)
+			}
+		}
+	}
+	return output.String()
 }
 
 func formatCell(value any) string {

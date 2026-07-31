@@ -6,7 +6,7 @@ type Error struct {
 	Code     string         `json:"code"`
 	Message  string         `json:"message"`
 	Hint     string         `json:"hint,omitempty"`
-	ExitCode int            `json:"-"`
+	ExitCode int            `json:"exitCode"`
 	Details  map[string]any `json:"details,omitempty"`
 }
 

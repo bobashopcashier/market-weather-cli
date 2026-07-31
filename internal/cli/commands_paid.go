@@ -13,18 +13,15 @@ import (
 
 func runWethr(ctx context.Context, argv []string) error {
 	command := argv[0]
-	parsed, err := parseArgs(argv[1:], map[string]optionSpec{
-		"mode":   {kind: stringOption, defaultVal: "latest", choices: []string{"latest", "history"}},
-		"logic":  {kind: stringOption, defaultVal: "nws", choices: []string{"nws", "wu"}},
-		"model":  {kind: stringOption},
-		"models": {kind: stringOption},
-		"run":    {kind: stringOption, defaultVal: "latest"},
-		"daily":  {kind: boolOption},
-		"date":   {kind: stringOption},
-		"window": {kind: stringOption, defaultVal: "30d"},
-		"radius": {kind: intOption, defaultVal: "50", min: 1, max: 500},
-	})
+	commandOptions, ok := wethrOptions[command]
+	if !ok {
+		return provider.NewError("invalid_arguments", fmt.Sprintf("unknown wethr command: %s", command), 2)
+	}
+	parsed, err := parseArgs(argv[1:], commandOptions)
 	if err != nil {
+		return err
+	}
+	if err := rejectExtraPositionals(parsed.positionals, 1, "wethr "+command); err != nil {
 		return err
 	}
 	stationInput, err := required(parsed.positionals, 0, "ICAO station")
@@ -104,9 +101,7 @@ func setIf(values url.Values, key, value string) {
 }
 
 func runMeteoblue(ctx context.Context, argv []string) error {
-	parsed, err := parseArgs(argv, map[string]optionSpec{
-		"package": {kind: stringOption, defaultVal: "basic-1h_basic-day"},
-	})
+	parsed, err := parseArgs(argv, meteoblueOptions)
 	if err != nil {
 		return err
 	}
@@ -120,19 +115,20 @@ func runMeteoblue(ctx context.Context, argv []string) error {
 	if parsed.flag("json") {
 		return render.JSON(os.Stdout, result)
 	}
-	fmt.Fprintf(os.Stdout, "meteoblue %s for %s (%g, %g)\n", result.PackageName, result.Location.Name, result.Location.Latitude, result.Location.Longitude)
+	fmt.Fprintf(os.Stdout, "meteoblue %s for %s (%g, %g)\n", render.SafeText(result.PackageName), render.SafeText(result.Location.Name), result.Location.Latitude, result.Location.Longitude)
 	return render.JSON(os.Stdout, result.Data)
 }
 
 func runWunderground(ctx context.Context, argv []string) error {
-	parsed, err := parseArgs(argv, map[string]optionSpec{
-		"units": {kind: stringOption, defaultVal: "e", choices: []string{"e", "m", "h"}},
-	})
+	parsed, err := parseArgs(argv, wundergroundOptions)
 	if err != nil {
 		return err
 	}
 	station, err := required(parsed.positionals, 0, "PWS station ID")
 	if err != nil {
+		return err
+	}
+	if err := rejectExtraPositionals(parsed.positionals, 1, "wunderground"); err != nil {
 		return err
 	}
 	result, err := provider.NewClient().GetPWSCurrent(ctx, station, parsed.value("units"))

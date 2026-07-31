@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -155,6 +156,20 @@ func TestCutIdxMaxAndDummies(t *testing.T) {
 	}
 	if _, err := GetDummies(frame, []string{"group", "name"}, "category"); err == nil {
 		t.Fatal("expected multi-column prefix error")
+	}
+}
+
+func TestGetDummiesRejectsAmplifiedResultBeforeAllocation(t *testing.T) {
+	rows := make([][]any, 2237)
+	for index := range rows {
+		rows[index] = []any{int64(index)}
+	}
+	frame, err := New([]string{"id"}, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetDummies(frame, []string{"id"}, ""); err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

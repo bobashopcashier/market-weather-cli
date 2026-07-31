@@ -134,3 +134,12 @@ func required(values []string, index int, label string) (string, error) {
 	}
 	return values[index], nil
 }
+
+func rejectExtraPositionals(values []string, maximum int, usage string) error {
+	if len(values) <= maximum {
+		return nil
+	}
+	err := provider.NewError("invalid_arguments", fmt.Sprintf("too many positional arguments for %s", usage), 2)
+	err.Hint = "Run the command with --help for the accepted arguments."
+	return err
+}

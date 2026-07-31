@@ -17,7 +17,50 @@ func JSON(writer io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+func CompactJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(value)
+}
+
+// SafeText escapes terminal control characters while leaving ordinary Unicode
+// untouched. JSON output uses encoding/json's native escaping instead.
+func SafeText(value any) string {
+	input := fmt.Sprint(value)
+	var output strings.Builder
+	for _, current := range input {
+		switch current {
+		case '\n':
+			output.WriteString(`\n`)
+		case '\r':
+			output.WriteString(`\r`)
+		case '\t':
+			output.WriteString(`\t`)
+		default:
+			if current < 0x20 || current == 0x7f || current >= 0x80 && current <= 0x9f {
+				fmt.Fprintf(&output, `\u%04x`, current)
+			} else {
+				output.WriteRune(current)
+			}
+		}
+	}
+	return output.String()
+}
+
 func Table(headers []string, rows [][]string) string {
+	safeHeaders := make([]string, len(headers))
+	for index, header := range headers {
+		safeHeaders[index] = SafeText(header)
+	}
+	safeRows := make([][]string, len(rows))
+	for rowIndex, row := range rows {
+		safeRows[rowIndex] = make([]string, len(row))
+		for columnIndex, cell := range row {
+			safeRows[rowIndex][columnIndex] = SafeText(cell)
+		}
+	}
+	headers = safeHeaders
+	rows = safeRows
 	widths := make([]int, len(headers))
 	for index, header := range headers {
 		widths[index] = utf8.RuneCountInString(header)
@@ -90,7 +133,7 @@ func Text(value any) string {
 	if value == nil {
 		return "n/a"
 	}
-	return fmt.Sprint(value)
+	return SafeText(value)
 }
 
 func Slice(value any) []any {

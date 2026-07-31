@@ -273,6 +273,14 @@ func TestWriteTable(t *testing.T) {
 	if got := output.String(); got != want {
 		t.Fatalf("table = %q, want %q", got, want)
 	}
+	unsafe := Frame{Columns: []string{"NAME\x1b[31m"}, Rows: [][]any{{"value\x00"}}}
+	output.Reset()
+	if err := Write(&output, unsafe, OutputOptions{Format: "table"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(output.String(), '\x1b') || strings.ContainsRune(output.String(), '\x00') {
+		t.Fatalf("table contains raw terminal controls: %q", output.String())
+	}
 }
 
 func TestLoadRejectsInvalidInputs(t *testing.T) {

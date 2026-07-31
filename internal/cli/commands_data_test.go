@@ -135,6 +135,131 @@ func TestUnknownDataOperationFailsBeforeReadingInput(t *testing.T) {
 	}
 }
 
+func TestDataRejectsIrrelevantOperationOptions(t *testing.T) {
+	err := runData(context.Background(), []string{"head", "--agg", "age:mean"})
+	if err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDataValidatesRequiredOptionsBeforeReadingInput(t *testing.T) {
+	err := runData(context.Background(), []string{"query", "/definitely/not/a/real/input.csv"})
+	if err == nil || !strings.Contains(err.Error(), "query requires --expr") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDataOutputProjectionLimitAndCompactJSON(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "values.csv")
+	if err := os.WriteFile(input, []byte("name,value,ignored\na,1,x\nb,2,y\nc,3,z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureDataOutput(t, []string{"head", input, "--n", "3", "--fields", "name,value", "--limit", "2", "--compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(output), "\n") != 1 {
+		t.Fatalf("compact JSON should be one line: %q", output)
+	}
+	var envelope struct {
+		Columns []struct {
+			Name string `json:"name"`
+		} `json:"columns"`
+		Rows [][]any `json:"rows"`
+		Meta struct {
+			RowCount       int  `json:"rowCount"`
+			SourceRowCount int  `json:"sourceRowCount"`
+			Truncated      bool `json:"truncated"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Columns) != 2 || envelope.Columns[0].Name != "name" || len(envelope.Rows) != 2 {
+		t.Fatalf("unexpected projection: %#v", envelope)
+	}
+	if envelope.Meta.RowCount != 2 || envelope.Meta.SourceRowCount != 3 || !envelope.Meta.Truncated {
+		t.Fatalf("missing truncation metadata: %#v", envelope.Meta)
+	}
+}
+
+func TestToNumpySupportsProjectionAndLimit(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "values.csv")
+	if err := os.WriteFile(input, []byte("a,b,c\n1,2,3\n4,5,6\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureDataOutput(t, []string{"to-numpy", input, "--fields", "a,c", "--limit", "1", "--compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Data [][]any `json:"data"`
+		Meta struct {
+			RowCount       int  `json:"rowCount"`
+			SourceRowCount int  `json:"sourceRowCount"`
+			Truncated      bool `json:"truncated"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data) != 1 || len(envelope.Data[0]) != 2 || envelope.Meta.SourceRowCount != 2 || !envelope.Meta.Truncated {
+		t.Fatalf("unexpected bounded matrix: %#v", envelope)
+	}
+}
+
+func TestLimitAndStructuredFormatsRejectBeforeReading(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"head", "/not/a/real/file.csv", "--limit", "1", "--output", "csv"},
+		{"profile", "/not/a/real/file.csv", "--output", "table"},
+	} {
+		if err := runData(context.Background(), arguments); err == nil || !strings.Contains(err.Error(), "output") {
+			t.Fatalf("unexpected error for %#v: %v", arguments, err)
+		}
+	}
+}
+
+func TestDataInputRootBlocksTraversalAndSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "inside.csv")
+	if err := os.WriteFile(inside, []byte("x\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := openDataInput("inside.csv", root)
+	if err != nil {
+		t.Fatalf("open inside path: %v", err)
+	}
+	file.Close()
+	outsideDirectory := t.TempDir()
+	outside := filepath.Join(outsideDirectory, "outside.csv")
+	if err := os.WriteFile(outside, []byte("x\n2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openDataInput(outside, root); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("absolute escape was not rejected: %v", err)
+	}
+	link := filepath.Join(root, "escape.csv")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openDataInput("escape.csv", root); err == nil {
+		t.Fatalf("symlink escape was not rejected: %v", err)
+	}
+	if _, err := openDataInput(".", root); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("directory input was not rejected: %v", err)
+	}
+}
+
+func TestConcatBudgetRejectsAmplifiedRetainedFrames(t *testing.T) {
+	budget := concatInputBudget{}
+	frame := dataframe.Frame{Columns: make([]string, 2000), Rows: make([][]any, 3000)}
+	if err := budget.add(frame); err == nil || !strings.Contains(err.Error(), "cell") {
+		t.Fatalf("unexpected budget error: %v", err)
+	}
+}
+
 func TestStructuredResultRejectsNonJSONOutput(t *testing.T) {
 	directory := t.TempDir()
 	input := filepath.Join(directory, "values.csv")
@@ -142,7 +267,7 @@ func TestStructuredResultRejectsNonJSONOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := captureDataOutput(t, []string{"to-numpy", input, "--output", "table"})
-	if err == nil || !strings.Contains(err.Error(), "structured JSON") {
+	if err == nil || !strings.Contains(err.Error(), "--output must be one of: json") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

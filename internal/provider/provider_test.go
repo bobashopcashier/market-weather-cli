@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,18 @@ func TestNormalizeStations(t *testing.T) {
 	}
 	if _, err := NormalizeStations([]string{"not-a-station"}); err == nil {
 		t.Fatal("expected invalid station error")
+	}
+	if _, err := NormalizeStation("KSFO,KJFK"); err == nil {
+		t.Fatal("single-station validation accepted a list")
+	}
+}
+
+func TestWethrRejectsQueryFragmentsBeforeCredentials(t *testing.T) {
+	client := NewClient()
+	for _, values := range []url.Values{{"model": {"HRRR?x=1"}}, {"run": {"latest#fragment"}}, {"window": {"%33%30d"}}} {
+		if _, err := client.CallWethr(context.Background(), "forecasts", values); err == nil {
+			t.Fatalf("accepted unsafe values: %#v", values)
+		}
 	}
 }
 
@@ -94,4 +107,55 @@ func TestDecodeStringList(t *testing.T) {
 	if strings.Join(direct, ",") != "A,B" {
 		t.Fatalf("unexpected direct list: %#v", direct)
 	}
+}
+
+func TestAgentOrientedIdentifierValidation(t *testing.T) {
+	for _, token := range []string{"123?fields=name", "123#fragment", "%31%32%33", "123\x1b"} {
+		if _, err := validateDecimalToken(token); err == nil {
+			t.Errorf("accepted unsafe token %q", token)
+		}
+	}
+	if token, err := validateDecimalToken("1234567890"); err != nil || token != "1234567890" {
+		t.Fatalf("valid token = %q, err = %v", token, err)
+	}
+	for _, station := range []string{"ABC?units=e", "ABC#x", "ABC%2FDEF", "ABC DEF", "ABC\x00"} {
+		if _, err := validatePWSStation(station); err == nil {
+			t.Errorf("accepted unsafe PWS station %q", station)
+		}
+	}
+	if station, err := validatePWSStation("kmahanov10"); err != nil || station != "KMAHANOV10" {
+		t.Fatalf("valid station = %q, err = %v", station, err)
+	}
+}
+
+func TestUnsafeProviderInputsFailBeforeTransportOrCredentials(t *testing.T) {
+	client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("transport called for unsafe input: %s", request.URL)
+		return nil, nil
+	})}}
+	if _, err := client.GetOrderBook(context.Background(), "123?fields=name"); err == nil {
+		t.Fatal("unsafe token was accepted")
+	}
+	if _, err := client.SearchMarkets(context.Background(), "weather\x1b[31m", 5, false); err == nil {
+		t.Fatal("control character in query was accepted")
+	}
+	if _, err := client.GetPWSCurrent(context.Background(), "ABC?units=e", "e"); err == nil {
+		t.Fatal("unsafe PWS station was accepted")
+	}
+}
+
+func FuzzResourceIdentifiers(f *testing.F) {
+	for _, seed := range []string{"123", "KMAHANOV10", "?fields=name", "%2e%2e", "abc\x00def", "abc#fragment"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		token, tokenErr := validateDecimalToken(value)
+		if tokenErr == nil && !decimalTokenPattern.MatchString(token) {
+			t.Fatalf("accepted token does not match grammar: %q", token)
+		}
+		station, stationErr := validatePWSStation(value)
+		if stationErr == nil && !pwsStationPattern.MatchString(station) {
+			t.Fatalf("accepted station does not match grammar: %q", station)
+		}
+	})
 }
