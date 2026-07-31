@@ -1,4 +1,4 @@
-# market-weather-cli
+# weather-cli
 
 Standalone Go CLIs for prediction-market research, aviation observations, and
 weather forecasts. The project turns the tools in the original list into seven
