@@ -15,6 +15,8 @@ import (
 
 const (
 	maximumFieldMaskBytes  = 1024
+	maximumFieldPaths      = 64
+	maximumFieldPathDepth  = 8
 	maximumJSONOutputBytes = 8 << 20
 )
 
@@ -62,9 +64,11 @@ func writeSafeHumanJSON(prefix string, value any) error {
 }
 
 func projectJSONFields(value any, rawMask string) (any, error) {
-	if len(rawMask) > maximumFieldMaskBytes {
-		return nil, provider.NewError("invalid_arguments", "--fields exceeds the 1024-byte limit", 2)
+	root, paths, err := parseFieldMask(rawMask)
+	if err != nil {
+		return nil, err
 	}
+
 	var document any
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -75,27 +79,8 @@ func projectJSONFields(value any, rawMask string) (any, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return nil, provider.NewError("internal_error", "could not decode JSON field projection", 1)
 	}
-	root := fieldMaskNode{}
-	paths := strings.Split(rawMask, ",")
-	if len(paths) > 64 {
-		return nil, provider.NewError("invalid_arguments", "--fields accepts at most 64 paths", 2)
-	}
 	for _, rawPath := range paths {
-		rawPath = strings.TrimSpace(rawPath)
-		if rawPath == "" {
-			return nil, provider.NewError("invalid_arguments", "--fields contains an empty path", 2)
-		}
 		segments := strings.Split(rawPath, ".")
-		current := root
-		for _, segment := range segments {
-			if !fieldSegmentPattern.MatchString(segment) {
-				return nil, provider.NewError("invalid_arguments", "--fields paths may contain only letters, numbers, underscores, hyphens, and dots", 2)
-			}
-			if current[segment] == nil {
-				current[segment] = fieldMaskNode{}
-			}
-			current = current[segment]
-		}
 		declared, definitive := declaredFieldPath(reflect.TypeOf(value), segments)
 		if definitive && !declared || !definitive && !fieldPathExists(document, segments) {
 			return nil, provider.NewError("invalid_arguments", fmt.Sprintf("JSON field path not found: %s", rawPath), 2)
@@ -106,6 +91,52 @@ func projectJSONFields(value any, rawMask string) (any, error) {
 		return nil, provider.NewError("invalid_arguments", "--fields requires an object or array-of-objects JSON response", 2)
 	}
 	return projected, nil
+}
+
+func parseFieldMask(rawMask string) (fieldMaskNode, []string, error) {
+	if len(rawMask) > maximumFieldMaskBytes {
+		return nil, nil, provider.NewError("invalid_arguments", "--fields exceeds the 1024-byte limit", 2)
+	}
+	root := fieldMaskNode{}
+	rawPaths := strings.Split(rawMask, ",")
+	if len(rawPaths) > maximumFieldPaths {
+		return nil, nil, provider.NewError("invalid_arguments", fmt.Sprintf("--fields accepts at most %d paths", maximumFieldPaths), 2)
+	}
+	paths := make([]string, 0, len(rawPaths))
+	seen := map[string]bool{}
+	for _, rawPath := range rawPaths {
+		rawPath = strings.TrimSpace(rawPath)
+		if rawPath == "" {
+			return nil, nil, provider.NewError("invalid_arguments", "--fields must not be empty or contain an empty path", 2)
+		}
+		segments := strings.Split(rawPath, ".")
+		if len(segments) > maximumFieldPathDepth {
+			return nil, nil, provider.NewError("invalid_arguments", fmt.Sprintf("--fields path exceeds the %d-segment limit: %s", maximumFieldPathDepth, rawPath), 2)
+		}
+		current := root
+		for _, segment := range segments {
+			if !fieldSegmentPattern.MatchString(segment) {
+				return nil, nil, provider.NewError("invalid_arguments", "--fields paths may contain only letters, numbers, underscores, hyphens, and dots", 2)
+			}
+		}
+		if seen[rawPath] {
+			return nil, nil, provider.NewError("invalid_arguments", fmt.Sprintf("duplicate --fields path: %s", rawPath), 2)
+		}
+		for _, existing := range paths {
+			if strings.HasPrefix(rawPath, existing+".") || strings.HasPrefix(existing, rawPath+".") {
+				return nil, nil, provider.NewError("invalid_arguments", fmt.Sprintf("overlapping --fields paths: %s and %s", existing, rawPath), 2)
+			}
+		}
+		seen[rawPath] = true
+		paths = append(paths, rawPath)
+		for _, segment := range segments {
+			if current[segment] == nil {
+				current[segment] = fieldMaskNode{}
+			}
+			current = current[segment]
+		}
+	}
+	return root, paths, nil
 }
 
 func fieldPathExists(value any, path []string) bool {

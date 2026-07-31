@@ -24,6 +24,8 @@ redaction, and no shell-based API calls.
 The CLI is self-describing. A bare schema request returns a compact offline
 index. An exact path returns typed positionals and options, defaults, ranges,
 credential environment variables, output limits, examples, and side effects.
+This lets an agent discover the supported request contract locally instead of
+looking up provider documentation or guessing parameters that may not exist.
 
 ```bash
 mwx schema
@@ -52,6 +54,52 @@ metar KSFO KJFK --hours 2 --json \
   --fields source,observations.icaoId,observations.reportTime,observations.temp \
   --compact
 ```
+
+### Raw curl versus `--fields`
+
+For the task “show San Francisco's daily high and low temperatures for the next
+seven days,” the projected CLI response retained the temperature unit, forecast
+dates, daily highs, and daily lows: everything needed for that task. Raw curl
+returned the full current-weather and daily-forecast response used by the
+adapter.
+
+| Path | Output bytes | Output tokens | Command + output tokens | Median time |
+|---|---:|---:|---:|---:|
+| Raw curl | 1,634 | 677 | 872 | 721.9 ms |
+| CLI with `--fields` | 265 | 128 | 179 | 721.9 ms |
+| Observed reduction | **83.8%** | **81.1%** | **79.5%** | Effectively tied |
+
+Reproduce the projected CLI request:
+
+```bash
+./dist/open-meteo 37.7749,-122.4194 --days 7 --unit f --json \
+  --fields units.temperature,forecast.daily.time,forecast.daily.temperature_2m_max,forecast.daily.temperature_2m_min \
+  --compact
+```
+
+Compare it with the equivalent raw provider request:
+
+```bash
+curl -sS --fail-with-body --compressed \
+  --get https://api.open-meteo.com/v1/forecast \
+  -H 'Accept: application/json' \
+  -H 'User-Agent: market-weather-cli/0.2.0' \
+  --data-urlencode latitude=37.7749 \
+  --data-urlencode longitude=-122.4194 \
+  --data-urlencode timezone=auto \
+  --data-urlencode forecast_days=7 \
+  --data-urlencode current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m \
+  --data-urlencode daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset \
+  --data-urlencode temperature_unit=fahrenheit \
+  --data-urlencode wind_speed_unit=mph \
+  --data-urlencode precipitation_unit=inch
+```
+
+Measured on July 31, 2026 with two warmups and 15 randomized serial runs per
+path. Tokens use the `o200k_base` tokenizer. Every projected date, high, low,
+and temperature unit matched the raw response; median times rounded to the same
+tenth of a millisecond. Projection happens locally after download, so it reduces
+agent context usage rather than provider response size or network latency.
 
 Each provider payload is capped at 8 MiB before decoding, and final agent-facing
 JSON is capped at 8 MiB before anything is written to stdout. Market search is
@@ -178,9 +226,11 @@ resolution source.
 
 Human-readable output is the default. `--json` or `MWX_OUTPUT=json` emits one
 JSON document to standard output. `--fields` projects comma-separated dotted
-paths, including paths through arrays of objects. `--compact` removes formatting
-whitespace. Errors go to standard error; with JSON output, errors have this
-versioned shape:
+paths, including paths through arrays of objects. Empty, duplicate, overlapping,
+syntactically malformed, and excessively deep field paths are rejected before
+network access. `mwx schema` publishes the byte, path-count, and path-depth
+limits. `--compact` removes formatting whitespace. Errors go to standard error;
+with JSON output, errors have this versioned shape:
 
 ```json
 {

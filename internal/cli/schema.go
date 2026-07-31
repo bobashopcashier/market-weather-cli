@@ -77,19 +77,21 @@ type JSONTypeSchema struct {
 }
 
 type optionSchema struct {
-	Name          string `json:"name"`
-	Alias         string `json:"alias,omitempty"`
-	Type          string `json:"type"`
-	MaxLength     int    `json:"maxLength,omitempty"`
-	LengthUnit    string `json:"lengthUnit,omitempty"`
-	Pattern       string `json:"pattern,omitempty"`
-	Format        string `json:"format,omitempty"`
-	Normalization string `json:"normalization,omitempty"`
-	Description   string `json:"description,omitempty"`
-	Default       any    `json:"default,omitempty"`
-	Enum          []any  `json:"enum,omitempty"`
-	Minimum       *int   `json:"minimum,omitempty"`
-	Maximum       *int   `json:"maximum,omitempty"`
+	Name             string `json:"name"`
+	Alias            string `json:"alias,omitempty"`
+	Type             string `json:"type"`
+	MaxLength        int    `json:"maxLength,omitempty"`
+	LengthUnit       string `json:"lengthUnit,omitempty"`
+	MaximumPaths     int    `json:"maximumPaths,omitempty"`
+	MaximumPathDepth int    `json:"maximumPathDepth,omitempty"`
+	Pattern          string `json:"pattern,omitempty"`
+	Format           string `json:"format,omitempty"`
+	Normalization    string `json:"normalization,omitempty"`
+	Description      string `json:"description,omitempty"`
+	Default          any    `json:"default,omitempty"`
+	Enum             []any  `json:"enum,omitempty"`
+	Minimum          *int   `json:"minimum,omitempty"`
+	Maximum          *int   `json:"maximum,omitempty"`
 }
 
 type outputSchema struct {
@@ -267,7 +269,7 @@ func effectsFor(definition commandDefinition) effectsSchema {
 
 func describeOption(name string, spec optionSpec) optionSchema {
 	document := optionSchema{
-		Name: "--" + name, MaxLength: spec.maxLength, Pattern: spec.pattern, Format: spec.format,
+		Name: "--" + name, MaxLength: spec.maxLength, MaximumPaths: spec.maxPaths, MaximumPathDepth: spec.maxPathDepth, Pattern: spec.pattern, Format: spec.format,
 		Normalization: spec.normalize, Description: spec.description,
 	}
 	if document.MaxLength > 0 {

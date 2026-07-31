@@ -35,7 +35,17 @@ func TestFieldProjectionAcrossArrays(t *testing.T) {
 
 func TestFieldProjectionRejectsHallucinatedPaths(t *testing.T) {
 	input := map[string]any{"source": "noaa"}
-	for _, mask := range []string{"missing", "source?fields=x", "", strings.Repeat("x", maximumFieldMaskBytes+1)} {
+	for _, mask := range []string{
+		"missing",
+		"source?fields=x",
+		"",
+		"   ",
+		"source,source",
+		"source,source.value",
+		"source.value,source",
+		"a.b.c.d.e.f.g.h.i",
+		strings.Repeat("x", maximumFieldMaskBytes+1),
+	} {
 		if _, err := projectJSONFields(input, mask); err == nil {
 			t.Errorf("accepted invalid field mask %q", mask)
 		}
@@ -95,6 +105,21 @@ func TestContextControlsRequireJSON(t *testing.T) {
 	parsed, err := parseArgs([]string{"KSFO", "--fields", "source", "--compact"}, metarOptions)
 	if err != nil || !parsed.flag("json") || !parsed.flag("compact") {
 		t.Fatalf("MWX_OUTPUT did not enable JSON controls: %#v, err=%v", parsed, err)
+	}
+}
+
+func TestFieldMaskSyntaxIsRejectedDuringArgumentParsing(t *testing.T) {
+	for _, argv := range [][]string{
+		{"KSFO", "--json", "--fields="},
+		{"KSFO", "--json", "--fields", "   "},
+		{"KSFO", "--json", "--fields", "source,source"},
+		{"KSFO", "--json", "--fields", "source,source.value"},
+		{"KSFO", "--json", "--fields", "a.b.c.d.e.f.g.h.i"},
+		{"KSFO", "--json", "--fields", strings.Repeat("x", maximumFieldMaskBytes+1)},
+	} {
+		if _, err := parseArgs(argv, metarOptions); err == nil {
+			t.Errorf("accepted invalid argv %#v", argv)
+		}
 	}
 }
 

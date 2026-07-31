@@ -18,17 +18,19 @@ const (
 )
 
 type optionSpec struct {
-	kind        optionKind
-	alias       string
-	defaultVal  string
-	choices     []string
-	min         int
-	max         int
-	maxLength   int
-	pattern     string
-	format      string
-	normalize   string
-	description string
+	kind         optionKind
+	alias        string
+	defaultVal   string
+	choices      []string
+	min          int
+	max          int
+	maxLength    int
+	maxPaths     int
+	maxPathDepth int
+	pattern      string
+	format       string
+	normalize    string
+	description  string
 }
 
 type parsedArgs struct {
@@ -40,7 +42,7 @@ type parsedArgs struct {
 var globalOptions = map[string]optionSpec{
 	"help":    {kind: boolOption, alias: "h", description: "Show command help"},
 	"json":    {kind: boolOption, alias: "j", description: "Emit stable machine-readable JSON"},
-	"fields":  {kind: stringOption, maxLength: maximumFieldMaskBytes, description: "Project JSON output using comma-separated field paths"},
+	"fields":  {kind: stringOption, maxLength: maximumFieldMaskBytes, maxPaths: maximumFieldPaths, maxPathDepth: maximumFieldPathDepth, description: "Project JSON output using comma-separated field paths"},
 	"compact": {kind: boolOption, description: "Emit single-line JSON"},
 }
 
@@ -125,7 +127,12 @@ func parseArgs(argv []string, commandSpec map[string]optionSpec, jsonDefault ...
 			parsed.values[name] = option.defaultVal
 		}
 	}
-	if (parsed.value("fields") != "" || parsed.flag("compact")) && !parsed.flag("json") {
+	if seenOptions["fields"] {
+		if _, _, err := parseFieldMask(parsed.value("fields")); err != nil {
+			return parsed, err
+		}
+	}
+	if (seenOptions["fields"] || parsed.flag("compact")) && !parsed.flag("json") {
 		return parsed, provider.NewError("invalid_arguments", "--fields and --compact require JSON output; add --json or set MWX_OUTPUT=json", 2)
 	}
 	return parsed, nil
