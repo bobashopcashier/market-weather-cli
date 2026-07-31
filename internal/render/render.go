@@ -17,7 +17,81 @@ func JSON(writer io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
+func CompactJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(value)
+}
+
+// SafeJSON is for JSON-shaped data displayed in a human terminal. It replaces
+// unsafe runes in both keys and string values before encoding.
+func SafeJSON(writer io.Writer, value any) error {
+	var encoded strings.Builder
+	if err := JSON(&encoded, value); err != nil {
+		return err
+	}
+	var safe strings.Builder
+	for _, current := range encoded.String() {
+		if unsafeJSONRune(current) {
+			fmt.Fprintf(&safe, `\u%04x`, current)
+		} else {
+			safe.WriteRune(current)
+		}
+	}
+	_, err := io.WriteString(writer, safe.String())
+	return err
+}
+
+func unsafeJSONRune(value rune) bool {
+	return value == 0x7f || value >= 0x80 && value <= 0x9f ||
+		value >= 0x200b && value <= 0x200f || value >= 0x202a && value <= 0x202e ||
+		value >= 0x2066 && value <= 0x2069 || value == 0xfeff
+}
+
+// SafeText escapes terminal and directionality controls while leaving ordinary
+// Unicode untouched. JSON output uses encoding/json's native escaping.
+func SafeText(value any) string {
+	input := fmt.Sprint(value)
+	var output strings.Builder
+	for _, current := range input {
+		switch current {
+		case '\n':
+			output.WriteString(`\n`)
+		case '\r':
+			output.WriteString(`\r`)
+		case '\t':
+			output.WriteString(`\t`)
+		default:
+			if unsafeDisplayRune(current) {
+				fmt.Fprintf(&output, `\u%04x`, current)
+			} else {
+				output.WriteRune(current)
+			}
+		}
+	}
+	return output.String()
+}
+
+func unsafeDisplayRune(value rune) bool {
+	return value < 0x20 || value == 0x7f || value >= 0x80 && value <= 0x9f ||
+		value >= 0x200b && value <= 0x200f || value >= 0x202a && value <= 0x202e ||
+		value >= 0x2066 && value <= 0x2069 || value == 0xfeff
+}
+
 func Table(headers []string, rows [][]string) string {
+	safeHeaders := make([]string, len(headers))
+	for index, header := range headers {
+		safeHeaders[index] = SafeText(header)
+	}
+	safeRows := make([][]string, len(rows))
+	for rowIndex, row := range rows {
+		safeRows[rowIndex] = make([]string, len(row))
+		for columnIndex, cell := range row {
+			safeRows[rowIndex][columnIndex] = SafeText(cell)
+		}
+	}
+	headers = safeHeaders
+	rows = safeRows
 	widths := make([]int, len(headers))
 	for index, header := range headers {
 		widths[index] = utf8.RuneCountInString(header)
@@ -90,7 +164,7 @@ func Text(value any) string {
 	if value == nil {
 		return "n/a"
 	}
-	return fmt.Sprint(value)
+	return SafeText(value)
 }
 
 func Slice(value any) []any {

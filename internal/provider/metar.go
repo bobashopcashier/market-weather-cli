@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
@@ -51,7 +50,7 @@ func NormalizeStations(values []string) ([]string, error) {
 				continue
 			}
 			if !stationPattern.MatchString(station) {
-				return nil, NewError("invalid_arguments", fmt.Sprintf("invalid station identifier: %s", station), 2)
+				return nil, NewError("invalid_arguments", "station identifiers must contain 3 or 4 letters or numbers", 2)
 			}
 			if !seen[station] {
 				seen[station] = true
@@ -62,7 +61,21 @@ func NormalizeStations(values []string) ([]string, error) {
 	if len(stations) == 0 {
 		return nil, NewError("invalid_arguments", "at least one ICAO station is required", 2)
 	}
+	if len(stations) > 50 {
+		return nil, NewError("invalid_arguments", "at most 50 unique station identifiers are allowed", 2)
+	}
 	return stations, nil
+}
+
+func NormalizeStation(value string) (string, error) {
+	stations, err := NormalizeStations([]string{value})
+	if err != nil {
+		return "", err
+	}
+	if len(stations) != 1 {
+		return "", NewError("invalid_arguments", "exactly one station identifier is required", 2)
+	}
+	return stations[0], nil
 }
 
 func (c *Client) GetMETAR(ctx context.Context, stationInput []string, hours int) (METARResult, error) {

@@ -19,3 +19,12 @@ func TestParseArgsRejectsUnknown(t *testing.T) {
 		t.Fatal("expected unknown option error")
 	}
 }
+
+func TestParseArgsRejectsDuplicateOptions(t *testing.T) {
+	if _, err := parseArgs([]string{"--hours", "2", "--hours", "3"}, metarOptions); err == nil {
+		t.Fatal("expected duplicate value option error")
+	}
+	if _, err := parseArgs([]string{"--json", "-j"}, metarOptions); err == nil {
+		t.Fatal("expected duplicate boolean option error")
+	}
+}

@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const userAgent = "market-weather-cli/0.1.0"
+const (
+	userAgent                    = "market-weather-cli/0.2.0"
+	MaximumProviderResponseBytes = 8 << 20
+)
 
 type Client struct {
 	HTTP *http.Client
@@ -93,7 +96,17 @@ func (c *Client) GetJSON(ctx context.Context, endpoint string, headers map[strin
 		safeBody := redactResponseText(strings.TrimSpace(string(body)), endpoint, headers)
 		return false, HTTPError(resp.StatusCode, RedactURL(endpoint), safeBody)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaximumProviderResponseBytes+1))
+	if err != nil {
+		return false, &Error{Code: "network_error", Message: "could not read the provider response", ExitCode: 1, Details: map[string]any{"url": RedactURL(endpoint)}}
+	}
+	if len(body) > MaximumProviderResponseBytes {
+		return false, &Error{
+			Code: "provider_response_too_large", Message: "provider response exceeded the 8388608-byte safety limit", ExitCode: 1,
+			Details: map[string]any{"url": RedactURL(endpoint), "maximumBytes": MaximumProviderResponseBytes},
+		}
+	}
+	if err := json.Unmarshal(body, target); err != nil {
 		return false, &Error{
 			Code:     "invalid_provider_response",
 			Message:  "provider returned invalid JSON",
