@@ -171,9 +171,27 @@ func TestAgentOrientedIdentifierValidation(t *testing.T) {
 func TestPolymarketNestedCollectionsAreBoundedWithMetadata(t *testing.T) {
 	markets := make([]rawMarket, MaximumMarketsPerEvent+1)
 	for index := range markets {
-		markets[index] = rawMarket{ID: index, Active: true, Question: fmt.Sprintf("market %d", index)}
+		markets[index] = rawMarket{
+			ID:        json.RawMessage(fmt.Sprintf("%d", index)),
+			Question:  fmt.Sprintf("market %d", index),
+			Slug:      fmt.Sprintf("market-%d", index),
+			Active:    true,
+			Volume:    json.RawMessage(`"1"`),
+			Liquidity: json.RawMessage(`"2"`),
+			Outcomes:  json.RawMessage(`["Yes","No"]`),
+			Prices:    json.RawMessage(`["0.5","0.5"]`),
+		}
 	}
-	payload, err := json.Marshal(rawSearch{Events: []rawEvent{{ID: "event-1", Active: true, Markets: markets}}})
+	payload, err := json.Marshal(rawSearch{Events: []rawEvent{{
+		ID:        json.RawMessage(`"event-1"`),
+		Title:     "Event 1",
+		Slug:      "event-1",
+		Active:    true,
+		EndDate:   "2026-08-02T00:00:00Z",
+		Volume:    json.RawMessage(`1`),
+		Liquidity: json.RawMessage(`2`),
+		Markets:   markets,
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +205,9 @@ func TestPolymarketNestedCollectionsAreBoundedWithMetadata(t *testing.T) {
 	if len(result.Events) != 1 || len(result.Events[0].Markets) != MaximumMarketsPerEvent || len(result.Truncation) != 1 {
 		t.Fatalf("market bounds were not reported: %#v", result)
 	}
+	if result.Truncation[0].Path != "events[].markets" || result.Truncation[0].ParentID != "event-1" || result.Truncation[0].SourceCount != MaximumMarketsPerEvent+1 || result.Truncation[0].EmittedCount != MaximumMarketsPerEvent {
+		t.Fatalf("market truncation metadata lost stable path or parent attribution: %#v", result.Truncation)
+	}
 
 	levels := make([]any, MaximumOrderBookLevels+1)
 	book := map[string]any{"bids": append([]any(nil), levels...), "asks": append([]any(nil), levels...)}
@@ -197,11 +218,19 @@ func TestPolymarketNestedCollectionsAreBoundedWithMetadata(t *testing.T) {
 }
 
 func TestDecodeStringList(t *testing.T) {
-	encoded := decodeStringList([]byte(`"[\"Yes\",\"No\"]"`))
+	collector := newSchemaValidationCollector()
+	encoded, valid := normalizePolymarketStringList([]byte(`"[\"Yes\",\"No\"]"`), "outcomes", collector)
+	if !valid || !collector.result().valid() {
+		t.Fatalf("encoded list failed validation: %#v", collector.result())
+	}
 	if strings.Join(encoded, ",") != "Yes,No" {
 		t.Fatalf("unexpected decoded list: %#v", encoded)
 	}
-	direct := decodeStringList([]byte(`["A","B"]`))
+	collector = newSchemaValidationCollector()
+	direct, valid := normalizePolymarketStringList([]byte(`["A","B"]`), "outcomes", collector)
+	if !valid || !collector.result().valid() {
+		t.Fatalf("direct list failed validation: %#v", collector.result())
+	}
 	if strings.Join(direct, ",") != "A,B" {
 		t.Fatalf("unexpected direct list: %#v", direct)
 	}

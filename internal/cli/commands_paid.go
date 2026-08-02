@@ -88,7 +88,7 @@ func runWethr(ctx context.Context, argv []string) error {
 		return err
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "wethr."+command, result)
 	}
 	return writeSafeHumanJSON(fmt.Sprintf("Wethr.net %s for %s\n", endpoint, station), result.Data)
 }
@@ -112,7 +112,7 @@ func runMeteoblue(ctx context.Context, argv []string) error {
 		return err
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "meteoblue", result)
 	}
 	prefix := fmt.Sprintf("meteoblue %s for %s (%g, %g)\n", render.SafeText(result.PackageName), render.SafeText(result.Location.Name), result.Location.Latitude, result.Location.Longitude)
 	return writeSafeHumanJSON(prefix, result.Data)
@@ -135,7 +135,7 @@ func runWunderground(ctx context.Context, argv []string) error {
 		return err
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "wunderground", result)
 	}
 	observations := render.Slice(result.Data["observations"])
 	if len(observations) == 0 {

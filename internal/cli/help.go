@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 const rootHelp = `mwx: prediction-market and weather command-line tools
 
@@ -25,9 +25,10 @@ Tools:
   providers     Show provider readiness and credential requirements
 
 Every tool is also installed as its own executable. Use --json or
-MWX_OUTPUT=json for stable machine-readable output. With JSON, use --fields to
-project response fields and --compact to reduce formatting tokens. API keys are
-read only from environment variables.
+MWX_OUTPUT=json for versioned machine-readable output. With JSON, use --fields
+to project response data, --require-fields to fail if task-critical data is
+missing, and --compact to reduce formatting tokens. API keys are read only from
+environment variables.
 
 Agent discovery:
   mwx schema
@@ -133,7 +134,7 @@ Example:
 	"providers": `providers: provider readiness without exposing credential values
 
 Usage:
-  mwx providers [--json] [--fields PATHS] [--compact]
+  mwx providers [--json] [--fields PATHS] [--require-fields PATHS] [--compact]
 `,
 }
 

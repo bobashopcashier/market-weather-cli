@@ -33,16 +33,16 @@ type ForecastResult struct {
 
 type geocodeResponse struct {
 	Results []struct {
-		ID          int64   `json:"id"`
+		ID          int64   `json:"id,omitempty"`
 		Name        string  `json:"name"`
 		Latitude    float64 `json:"latitude"`
 		Longitude   float64 `json:"longitude"`
-		Elevation   float64 `json:"elevation"`
-		Timezone    string  `json:"timezone"`
-		Country     string  `json:"country"`
-		CountryCode string  `json:"country_code"`
-		Admin1      string  `json:"admin1"`
-	} `json:"results"`
+		Elevation   float64 `json:"elevation,omitempty"`
+		Timezone    string  `json:"timezone,omitempty"`
+		Country     string  `json:"country,omitempty"`
+		CountryCode string  `json:"country_code,omitempty"`
+		Admin1      string  `json:"admin1,omitempty"`
+	} `json:"results,omitempty"`
 }
 
 func parseCoordinates(input string) (Location, bool, error) {

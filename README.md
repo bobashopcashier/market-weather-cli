@@ -14,25 +14,53 @@ meteoblue     meteoblue package API
 wunderground  Weather Underground PWS data via The Weather Company
 ```
 
-The binaries use only the Go standard library. They have stable `--json`
-output, runtime command schemas, raw JSON requests, strict command-specific
-validation, explicit exit codes, response-size limits, timeouts, credential
-redaction, and no shell-based API calls.
+The binaries use only the Go standard library. They have versioned, per-command
+`--json` output contracts, runtime command schemas, raw JSON requests, strict
+request validation, declared response-shape checks, explicit exit codes,
+response-size limits, timeouts, credential redaction, and no shell-based API
+calls.
 
 
-### Raw curl versus `--fields`
+### Historical raw curl versus `--fields`
 
-For the task “show San Francisco's daily high and low temperatures for the next
-seven days,” the projected CLI response retained the temperature unit, forecast
-dates, daily highs, and daily lows: everything needed for that task. Raw curl
-returned the full current-weather and daily-forecast response used by the
-adapter.
+This `v0.2.0` baseline predates the versioned success envelope. For the task
+“show San Francisco's daily high and low temperatures for the next seven days,”
+the projected CLI response retained the temperature unit, forecast dates, daily
+highs, and daily lows. Raw curl returned the full current-weather and
+daily-forecast response used by the adapter.
 
 | Path | Output bytes | Output tokens | Command + output tokens | Median time |
 |---|---:|---:|---:|---:|
 | Raw curl | 1,634 | 677 | 872 | 721.9 ms |
 | CLI with `--fields` | 265 | 128 | 179 | 721.9 ms |
 | Observed reduction | **83.8%** | **81.1%** | **79.5%** | tied |
+
+### Schema-drift containment
+
+The fixed regression matrix currently covers 24 frozen responses across NOAA
+METAR, Open-Meteo geocoding, and Polymarket search. It is a conformance test,
+not an empirical provider or agent failure rate.
+
+| Arm | Compatible cases | Breaks detected | Silently accepted breaks |
+|---|---:|---:|---:|
+| Unvalidated typed JSON decoder | 10/10 | 4/14 | 10/14 |
+| `weather-cli` response validator | 10/10 | **14/14** | **0/14** |
+
+Every detected break included the affected JSON path. Dynamic descendants are
+not counted in this structural matrix. Open-Meteo forecast maps, Wethr data,
+meteoblue data, Weather Underground data, and provider-specific order-book
+metadata remain open beyond their declared object boundaries. Use
+`--require-fields` to contract task-critical presence in those payloads; it does
+not add a type assertion for a path whose published schema is `any`.
+
+Run the matrix with:
+
+```sh
+go test ./internal/provider -run TestSchemaDriftBenchmark -count=1 -v
+```
+
+See [benchmarks/schema-drift/README.md](benchmarks/schema-drift/README.md) for
+the fixture taxonomy, denominators, limitations, and expansion plan.
 
 
 ## Agent-safe discovery and requests
@@ -68,6 +96,7 @@ unnecessary time ranges or hourly data:
 ```bash
 metar KSFO KJFK --hours 2 --json \
   --fields source,observations.icaoId,observations.reportTime,observations.temp \
+  --require-fields observations.icaoId,observations.reportTime \
   --compact
 ```
 
@@ -101,7 +130,10 @@ Measured on July 31, 2026 with two warmups and 15 randomized serial runs per
 path. Tokens use the `o200k_base` tokenizer. Every projected date, high, low,
 and temperature unit matched the raw response; median times rounded to the same
 tenth of a millisecond. Projection happens locally after download, so it reduces
-agent context usage rather than provider response size or network latency.
+agent context usage rather than provider response size or network latency. A
+hand-written `curl | jq` pipeline can provide similar context reduction; this
+CLI additionally ships the bounds, versioned response contract, and localized
+drift errors.
 
 Each provider payload is capped at 8 MiB before decoding, and final agent-facing
 JSON is capped at 8 MiB before anything is written to stdout. Market search is
@@ -224,31 +256,89 @@ It does not place trades. Weather contracts can use provider-specific rounding,
 station, timezone, and resolution rules, so always inspect the market's stated
 resolution source.
 
-## Output contract
+## Output contracts
 
-Human-readable output is the default. `--json` or `MWX_OUTPUT=json` emits one
-JSON document to standard output. `--fields` projects comma-separated dotted
-paths, including paths through arrays of objects. Empty, duplicate, overlapping,
-syntactically malformed, and excessively deep field paths are rejected before
-network access. `mwx schema` publishes the byte, path-count, and path-depth
-limits. `--compact` removes formatting whitespace. Errors go to standard error;
-with JSON output, errors have this versioned shape:
+Human-readable output remains the default. `--json` or `MWX_OUTPUT=json` emits
+one `mwx.agent/v1` envelope. Each native command also declares its own output
+contract, such as `mwx.output/metar/v1`. Field paths remain relative to `data`,
+so adding the envelope does not turn `observations.icaoId` into
+`data.observations.icaoId`.
 
 ```json
 {
-  "schemaVersion": "mwx.error/v1",
-  "error": {
-    "code": "not_configured",
-    "message": "WETHR_API_KEY is required for Wethr.net",
-    "hint": "Set WETHR_API_KEY in the environment. API keys are never accepted as command arguments.",
-    "exitCode": 2
+  "schemaVersion": "mwx.agent/v1",
+  "outputContractVersion": "mwx.output/metar/v1",
+  "ok": true,
+  "command": "metar",
+  "data": {
+    "source": "noaa-aviation-weather-center",
+    "observations": [{"icaoId": "KSFO"}]
   }
 }
 ```
 
+`--fields` projects comma-separated dotted paths, including paths through arrays
+of objects. `--require-fields` makes selected paths a presence and non-null
+contract across every returned array item. Empty arrays are valid; a later item
+missing a required path is not. When both flags are used, every required path
+must be covered by the projection.
+
+Historical Polymarket records can legitimately omit event or market volume,
+liquidity, and outcome prices. Optional volume and liquidity fields are omitted
+from `data`; an unavailable outcome `price` is `null`. Require those paths when
+the task cannot proceed without them.
+
+```bash
+open-meteo "San Francisco" --days 7 --json --compact \
+  --fields units.temperature,forecast.daily.time,forecast.daily.temperature_2m_max,forecast.daily.temperature_2m_min \
+  --require-fields units.temperature,forecast.daily.time,forecast.daily.temperature_2m_max,forecast.daily.temperature_2m_min
+```
+
+Empty, duplicate, overlapping, syntactically malformed, and excessively deep
+field paths are rejected before network access. Typed path typos are also
+rejected locally. `mwx schema` publishes the exact path bounds, response schema,
+envelope version, and per-command output contract.
+
+Provider JSON is checked before typed decoding can erase a missing field or turn
+it into a Go zero value. A declared or task-required mismatch emits no partial
+stdout and names the affected path on stderr:
+
+```json
+{
+  "schemaVersion": "mwx.agent/v1",
+  "outputContractVersion": "mwx.output/metar/v1",
+  "ok": false,
+  "command": "metar",
+  "error": {
+    "code": "UPSTREAM_SCHEMA_MISMATCH",
+    "message": "provider response did not match the expected JSON schema",
+    "exitCode": 6,
+    "details": {
+      "missingFields": ["observations[].icaoId"]
+    }
+  }
+}
+```
+
+Additive upstream fields remain compatible. Removing or renaming a declared
+field, changing a declared type, or dropping a `--require-fields` path fails
+closed. An incompatible change to a CLI-owned output shape requires a new
+`mwx.output/<command>/v2` identifier; consumers should reject unknown contract
+versions rather than guessing. Errors raised before a native command contract
+can be resolved use `mwx.output/error/v1`.
+
+Each command stores its contract revision explicitly. A pinned response-schema
+digest makes tests fail if a published shape changes without a corresponding
+revision bump.
+
 Common nonzero outcomes include `invalid_arguments`, `not_configured`,
 `authentication_failed`, `plan_required`, `rate_limited`, `not_found`,
-`provider_unavailable`, and `timeout`.
+`provider_unavailable`, `UPSTREAM_SCHEMA_MISMATCH`, and `timeout`.
+
+The initial deterministic drift-test protocol is documented in
+[benchmarks/schema-drift/README.md](benchmarks/schema-drift/README.md). It is a
+fixed conformance matrix, not a measurement of provider reliability or an
+empirical agent failure rate.
 
 Provider JSON remains untrusted data. The CLI sanitizes control, directionality,
 and zero-width characters in terminal text, but agents must never treat
@@ -282,8 +372,8 @@ make check
 make build
 ```
 
-`make check` runs formatting, `go vet`, and all tests. CI also builds every
-command on Linux.
+`make check` verifies formatting, runs `go vet`, and runs all tests, including
+the race detector. CI runs the same check and builds every command on Linux.
 
 ## License
 

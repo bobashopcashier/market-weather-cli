@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -9,6 +11,27 @@ import (
 
 	"github.com/bobashopcashier/market-weather-cli/internal/provider"
 )
+
+// Intentional response-shape changes require incrementing OutputContractRevision
+// before recording a digest under the new version key.
+var outputContractSchemaDigests = map[string]string{
+	"mwx.output/betmoar.book/v1":        "2e881f5dbfe3b857e3047eeec1d7ba35ff6b82139e103cb0fa0b8b1755aeb341",
+	"mwx.output/betmoar.search/v1":      "00e6e06d970cc286fa35e0866fae5269a3f5a6637b7f136276cfe63907568e09",
+	"mwx.output/metar/v1":               "f98a1be5977b5ff6cb3df42983a237745ea9ba43b46ed865576d3c72ef9c15b2",
+	"mwx.output/meteoblue/v1":           "1e8b13ca90ce50d618f52ace2181d3ac5a024756e0dc770eeb89601469b9c17c",
+	"mwx.output/open-meteo/v1":          "348500d22e014b656ab6488696deb61abaedbdbf8ddf4233fe643bfa15e83863",
+	"mwx.output/polyweather/v1":         "c37984419426a2ed2fd0d5f3b3c48c097fcfb3cd18a86d773cfbdf9cfe1b4136",
+	"mwx.output/providers/v1":           "325a6f345d074d8ab23c6e6fd51ac38e4fb292efc278e2e56eba15b59492e8d1",
+	"mwx.output/wethr.accuracy/v1":      "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.extreme/v1":       "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.forecast/v1":      "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.nearby/v1":        "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.nws/v1":           "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.obs/v1":           "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.pacing/v1":        "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wethr.precipitation/v1": "09aed0358c2b32e6d8cc5cbd0a6f866211c0345446aaf3226b4893b7ce69f944",
+	"mwx.output/wunderground/v1":        "b57413c5387bc3d679a750c9fdbba1bb5dcfa86da22ebf93884fefb33273e7ab",
+}
 
 func TestSchemaCatalogContainsExactlyProviderMethods(t *testing.T) {
 	definitions := commandDefinitions()
@@ -26,6 +49,40 @@ func TestSchemaCatalogContainsExactlyProviderMethods(t *testing.T) {
 	}
 }
 
+func TestOutputContractRevisionPinsPublishedResponseSchema(t *testing.T) {
+	seen := map[string]bool{}
+	for _, definition := range commandDefinitions() {
+		if definition.Passthrough {
+			continue
+		}
+		if definition.OutputContractRevision < 1 {
+			t.Fatalf("%s has no explicit output contract revision", commandName(definition.Path))
+		}
+		version := outputContractVersionFor(definition)
+		if seen[version] {
+			t.Fatalf("duplicate output contract version %q", version)
+		}
+		seen[version] = true
+		encoded, err := json.Marshal(schemaDocument(definition).Response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := fmt.Sprintf("%x", sha256.Sum256(encoded))
+		expected, ok := outputContractSchemaDigests[version]
+		if !ok {
+			t.Fatalf("%s has no pinned response schema digest", version)
+		}
+		if actual != expected {
+			t.Fatalf("%s response schema changed without a contract revision bump: got %s, want %s", version, actual, expected)
+		}
+	}
+	for version := range outputContractSchemaDigests {
+		if !seen[version] {
+			t.Fatalf("pinned response schema %s has no registered command", version)
+		}
+	}
+}
+
 func TestSchemaMatchesStrictProviderOptions(t *testing.T) {
 	definition := findDefinition(t, "wethr", "forecast")
 	document := schemaDocument(definition)
@@ -36,7 +93,7 @@ func TestSchemaMatchesStrictProviderOptions(t *testing.T) {
 	for _, option := range document.Options {
 		options[option.Name] = option
 	}
-	for _, expected := range []string{"--model", "--run", "--daily", "--params", "--json", "--fields", "--compact", "--help"} {
+	for _, expected := range []string{"--model", "--run", "--daily", "--params", "--json", "--fields", "--require-fields", "--compact", "--help"} {
 		if _, ok := options[expected]; !ok {
 			t.Errorf("forecast schema is missing %s", expected)
 		}
@@ -51,6 +108,9 @@ func TestSchemaMatchesStrictProviderOptions(t *testing.T) {
 	}
 	if document.CredentialEnv != "WETHR_API_KEY" || document.Output.MaximumProviderPayloadBytes == 0 || document.Output.MaximumJSONOutputBytes == 0 || len(document.Examples) == 0 {
 		t.Fatalf("schema is missing agent contract details: %#v", document)
+	}
+	if document.EnvelopeSchemaVersion != agentSchemaVersion || document.OutputContractVersion != "mwx.output/wethr.forecast/v1" {
+		t.Fatalf("schema is missing output contract identity: %#v", document)
 	}
 	if document.Params == nil || document.Params.AdditionalProperties || document.Params.MaximumBytes != maximumRawParamsBytes {
 		t.Fatalf("raw params object schema is missing: %#v", document.Params)
@@ -116,6 +176,9 @@ func TestSchemaPublishesRuntimeStringConstraints(t *testing.T) {
 	if options["--fields"].MaxLength != maximumFieldMaskBytes || options["--fields"].LengthUnit != "utf8Bytes" || options["--fields"].MaximumPaths != maximumFieldPaths || options["--fields"].MaximumPathDepth != maximumFieldPathDepth {
 		t.Fatalf("field-mask limits are missing: %#v", options["--fields"])
 	}
+	if options["--require-fields"].MaxLength != maximumFieldMaskBytes || options["--require-fields"].MaximumPaths != maximumFieldPaths || options["--require-fields"].MaximumPathDepth != maximumFieldPathDepth {
+		t.Fatalf("required-field limits are missing: %#v", options["--require-fields"])
+	}
 
 	nws := schemaDocument(findDefinition(t, "wethr", "nws"))
 	for _, option := range nws.Options {
@@ -165,6 +228,11 @@ func TestSchemaSupportsIndexDottedAndSpacedLookup(t *testing.T) {
 	}
 	if catalog.SchemaVersion != "mwx.command-index/v1" || catalog.CLIVersion != version || len(catalog.Commands) != 17 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
+	}
+	for _, command := range catalog.Commands {
+		if !command.Effects.ExternalProcess && command.OutputContractVersion == "" {
+			t.Fatalf("native command lacks an output contract: %#v", command)
+		}
 	}
 	for _, path := range [][]string{{"wethr.forecast"}, {"wethr", "forecast"}} {
 		data := captureStdout(t, func() error { return runSchema(path) })

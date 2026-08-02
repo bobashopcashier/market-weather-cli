@@ -29,6 +29,10 @@ var commands = map[string]func(context.Context, []string) error{
 func Run(forcedTool string, argv []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	command := ""
+	if rejectArgumentControls(argv) == nil {
+		command = requestedCommand(forcedTool, argv)
+	}
 	err := execute(ctx, forcedTool, argv)
 	if err == nil {
 		return 0
@@ -39,10 +43,10 @@ func Run(forcedTool string, argv []string) int {
 		appErr = &provider.Error{Code: "internal_error", Message: err.Error(), ExitCode: 1}
 	}
 	if jsonOutput {
-		envelope := struct {
-			SchemaVersion string          `json:"schemaVersion"`
-			Error         *provider.Error `json:"error"`
-		}{SchemaVersion: "mwx.error/v1", Error: appErr}
+		envelope := agentEnvelope{
+			SchemaVersion: agentSchemaVersion, OutputContractVersion: errorOutputContractVersion(command),
+			OK: false, Command: command, Error: appErr,
+		}
 		if hasArg(argv, "--compact") {
 			_ = render.CompactJSON(os.Stderr, envelope)
 		} else {
@@ -120,6 +124,9 @@ func execute(ctx context.Context, forcedTool string, argv []string) error {
 	}
 	expanded, err := expandRawParams(tool, argv)
 	if err != nil {
+		return err
+	}
+	if err := preflightResponseFields(tool, expanded); err != nil {
 		return err
 	}
 	return command(ctx, expanded)

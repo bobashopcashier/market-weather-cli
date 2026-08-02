@@ -107,13 +107,13 @@ func rawParamsOutputArgs(argv []string) ([]string, error) {
 		switch argument := argv[index]; {
 		case argument == "--json" || argument == "-j" || argument == "--compact":
 			result = append(result, argument)
-		case argument == "--fields":
+		case argument == "--fields" || argument == "--require-fields":
 			if index+1 >= len(argv) {
-				return nil, provider.NewError("invalid_arguments", "missing value for --fields", 2)
+				return nil, provider.NewError("invalid_arguments", "missing value for "+argument, 2)
 			}
 			result = append(result, argument, argv[index+1])
 			index++
-		case strings.HasPrefix(argument, "--fields="):
+		case strings.HasPrefix(argument, "--fields=") || strings.HasPrefix(argument, "--require-fields="):
 			result = append(result, argument)
 		default:
 			return nil, provider.NewError("invalid_arguments", "--params cannot be combined with positional arguments or convenience input flags", 2)

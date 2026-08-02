@@ -40,10 +40,11 @@ type parsedArgs struct {
 }
 
 var globalOptions = map[string]optionSpec{
-	"help":    {kind: boolOption, alias: "h", description: "Show command help"},
-	"json":    {kind: boolOption, alias: "j", description: "Emit stable machine-readable JSON"},
-	"fields":  {kind: stringOption, maxLength: maximumFieldMaskBytes, maxPaths: maximumFieldPaths, maxPathDepth: maximumFieldPathDepth, description: "Project JSON output using comma-separated field paths"},
-	"compact": {kind: boolOption, description: "Emit single-line JSON"},
+	"help":           {kind: boolOption, alias: "h", description: "Show command help"},
+	"json":           {kind: boolOption, alias: "j", description: "Emit versioned machine-readable JSON"},
+	"fields":         {kind: stringOption, maxLength: maximumFieldMaskBytes, maxPaths: maximumFieldPaths, maxPathDepth: maximumFieldPathDepth, description: "Project JSON data using comma-separated field paths"},
+	"require-fields": {kind: stringOption, maxLength: maximumFieldMaskBytes, maxPaths: maximumFieldPaths, maxPathDepth: maximumFieldPathDepth, description: "Require selected JSON data paths to be present and non-null"},
+	"compact":        {kind: boolOption, description: "Emit single-line JSON"},
 }
 
 func parseArgs(argv []string, commandSpec map[string]optionSpec, jsonDefault ...bool) (parsedArgs, error) {
@@ -132,8 +133,16 @@ func parseArgs(argv []string, commandSpec map[string]optionSpec, jsonDefault ...
 			return parsed, err
 		}
 	}
-	if (seenOptions["fields"] || parsed.flag("compact")) && !parsed.flag("json") {
-		return parsed, provider.NewError("invalid_arguments", "--fields and --compact require JSON output; add --json or set MWX_OUTPUT=json", 2)
+	if seenOptions["require-fields"] {
+		if _, _, err := parseFieldMask(parsed.value("require-fields")); err != nil {
+			return parsed, err
+		}
+	}
+	if err := validateRequiredFieldOptions(parsed); err != nil {
+		return parsed, err
+	}
+	if (seenOptions["fields"] || seenOptions["require-fields"] || parsed.flag("compact")) && !parsed.flag("json") {
+		return parsed, provider.NewError("invalid_arguments", "--fields, --require-fields, and --compact require JSON output; add --json or set MWX_OUTPUT=json", 2)
 	}
 	return parsed, nil
 }
