@@ -24,13 +24,24 @@ var fieldSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 type fieldMaskNode map[string]fieldMaskNode
 
-func writeJSON(parsed parsedArgs, value any) error {
+func writeJSON(parsed parsedArgs, command string, value any) error {
+	document, err := validateCommandOutput(command, value)
+	if err != nil {
+		return err
+	}
+	if err := validateTaskRequiredFields(command, document, parsed.value("require-fields")); err != nil {
+		return err
+	}
 	if mask := parsed.value("fields"); mask != "" {
 		projected, err := projectJSONFields(value, mask)
 		if err != nil {
 			return err
 		}
 		value = projected
+	}
+	value = agentEnvelope{
+		SchemaVersion: agentSchemaVersion, OutputContractVersion: outputContractVersion(command),
+		OK: true, Command: command, Data: value,
 	}
 	var output bytes.Buffer
 	if parsed.flag("compact") {
@@ -45,7 +56,7 @@ func writeJSON(parsed parsedArgs, value any) error {
 		err.Hint = "Retry with --fields, --compact, and smaller provider-specific bounds."
 		return err
 	}
-	_, err := output.WriteTo(os.Stdout)
+	_, err = output.WriteTo(os.Stdout)
 	return err
 }
 

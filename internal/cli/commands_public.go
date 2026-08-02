@@ -26,7 +26,7 @@ func runMETAR(ctx context.Context, argv []string) error {
 		return err
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "metar", result)
 	}
 	if len(result.Observations) == 0 {
 		return provider.NewError("not_found", "NOAA returned no observations for the requested station and time window", 3)
@@ -69,7 +69,7 @@ func runOpenMeteo(ctx context.Context, argv []string) error {
 		return err
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "open-meteo", result)
 	}
 	printForecast(result)
 	return nil
@@ -130,7 +130,7 @@ func runBetmoar(ctx context.Context, argv []string) error {
 			return err
 		}
 		if parsed.flag("json") {
-			return writeJSON(parsed, result)
+			return writeJSON(parsed, "betmoar.search", result)
 		}
 		printMarketSearch(result)
 		return nil
@@ -146,7 +146,7 @@ func runBetmoar(ctx context.Context, argv []string) error {
 		if err != nil {
 			return err
 		}
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "betmoar.book", result)
 	default:
 		return provider.NewError("invalid_arguments", fmt.Sprintf("unknown betmoar command: %s", argv[0]), 2)
 	}
@@ -233,10 +233,14 @@ func printMarketTruncation(truncation []provider.Truncation) {
 	}
 	rows := make([][]string, 0, len(truncation))
 	for _, item := range truncation {
-		rows = append(rows, []string{item.Path, strconv.Itoa(item.SourceCount), strconv.Itoa(item.EmittedCount)})
+		parent := "-"
+		if item.ParentID != "" {
+			parent = item.ParentID
+		}
+		rows = append(rows, []string{item.Path, parent, strconv.Itoa(item.SourceCount), strconv.Itoa(item.EmittedCount)})
 	}
 	fmt.Fprintln(os.Stdout, "\nResults truncated by safety limits:")
-	fmt.Fprintln(os.Stdout, render.Table([]string{"PATH", "AVAILABLE", "SHOWN"}, rows))
+	fmt.Fprintln(os.Stdout, render.Table([]string{"PATH", "PARENT", "AVAILABLE", "SHOWN"}, rows))
 }
 
 func shortToken(token string) string {
@@ -332,7 +336,7 @@ func runPolyweather(ctx context.Context, argv []string) error {
 		Note: "Informational only. Check each market's resolution source and rules before acting.",
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, result)
+		return writeJSON(parsed, "polyweather", result)
 	}
 	fmt.Fprintf(os.Stdout, "%s weather-market desk  (%s)\n\n", render.SafeText(city), strings.ToUpper(station))
 	fmt.Fprintf(os.Stdout, "METAR %s: %s°C, wind %s° at %s kt\n%s\n\n", render.SafeText(observation.ReportTime),
@@ -385,7 +389,7 @@ func runProviders(argv []string) error {
 		{Name: "Weather Underground PWS", Command: "wunderground", Status: configuredStatus("WEATHER_COMPANY_API_KEY"), Auth: "WEATHER_COMPANY_API_KEY with PWS entitlement"},
 	}
 	if parsed.flag("json") {
-		return writeJSON(parsed, providersResult{Providers: providers})
+		return writeJSON(parsed, "providers", providersResult{Providers: providers})
 	}
 	rows := [][]string{}
 	for _, item := range providers {

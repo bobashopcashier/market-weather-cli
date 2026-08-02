@@ -124,44 +124,48 @@ type dryRunResponseSchema struct {
 }
 
 type commandDefinition struct {
-	Path           []string
-	Summary        string
-	ReadOnly       bool
-	AgentInvocable bool
-	Positionals    []positionalSchema
-	Options        map[string]optionSpec
-	Output         outputSchema
-	CredentialEnv  string
-	Passthrough    bool
-	Examples       []string
-	ResponseType   reflect.Type
+	Path                   []string
+	Summary                string
+	ReadOnly               bool
+	AgentInvocable         bool
+	OutputContractRevision int
+	Positionals            []positionalSchema
+	Options                map[string]optionSpec
+	Output                 outputSchema
+	CredentialEnv          string
+	Passthrough            bool
+	Examples               []string
+	ResponseType           reflect.Type
 }
 
 type commandSchemaDocument struct {
-	SchemaVersion        string                      `json:"schemaVersion"`
-	CLIVersion           string                      `json:"cliVersion"`
-	Path                 []string                    `json:"path"`
-	Summary              string                      `json:"summary"`
-	ReadOnly             bool                        `json:"readOnly"`
-	AgentInvocable       bool                        `json:"agentInvocable"`
-	Effects              effectsSchema               `json:"effects"`
-	Positionals          []positionalSchema          `json:"positionals,omitempty"`
-	Options              []optionSchema              `json:"options"`
-	Output               outputSchema                `json:"output"`
-	CredentialEnv        string                      `json:"credentialEnv,omitempty"`
-	ErrorCodes           []string                    `json:"errorCodes"`
-	Examples             []string                    `json:"examples,omitempty"`
-	Params               *rawParamsObjectSchema      `json:"params,omitempty"`
-	Response             JSONTypeSchema              `json:"response"`
-	ConditionalResponses []conditionalResponseSchema `json:"conditionalResponses,omitempty"`
+	SchemaVersion         string                      `json:"schemaVersion"`
+	EnvelopeSchemaVersion string                      `json:"envelopeSchemaVersion,omitempty"`
+	OutputContractVersion string                      `json:"outputContractVersion,omitempty"`
+	CLIVersion            string                      `json:"cliVersion"`
+	Path                  []string                    `json:"path"`
+	Summary               string                      `json:"summary"`
+	ReadOnly              bool                        `json:"readOnly"`
+	AgentInvocable        bool                        `json:"agentInvocable"`
+	Effects               effectsSchema               `json:"effects"`
+	Positionals           []positionalSchema          `json:"positionals,omitempty"`
+	Options               []optionSchema              `json:"options"`
+	Output                outputSchema                `json:"output"`
+	CredentialEnv         string                      `json:"credentialEnv,omitempty"`
+	ErrorCodes            []string                    `json:"errorCodes"`
+	Examples              []string                    `json:"examples,omitempty"`
+	Params                *rawParamsObjectSchema      `json:"params,omitempty"`
+	Response              JSONTypeSchema              `json:"response"`
+	ConditionalResponses  []conditionalResponseSchema `json:"conditionalResponses,omitempty"`
 }
 
 type commandIndexEntry struct {
-	Path           []string      `json:"path"`
-	Summary        string        `json:"summary"`
-	ReadOnly       bool          `json:"readOnly"`
-	AgentInvocable bool          `json:"agentInvocable"`
-	Effects        effectsSchema `json:"effects"`
+	Path                  []string      `json:"path"`
+	OutputContractVersion string        `json:"outputContractVersion,omitempty"`
+	Summary               string        `json:"summary"`
+	ReadOnly              bool          `json:"readOnly"`
+	AgentInvocable        bool          `json:"agentInvocable"`
+	Effects               effectsSchema `json:"effects"`
 }
 
 type commandIndexDocument struct {
@@ -182,10 +186,14 @@ func runSchema(path []string) error {
 	matches := make([]commandIndexEntry, 0)
 	for _, definition := range definitions {
 		if hasStringPrefix(definition.Path, path) {
-			matches = append(matches, commandIndexEntry{
+			entry := commandIndexEntry{
 				Path: definition.Path, Summary: definition.Summary, ReadOnly: definition.ReadOnly,
 				AgentInvocable: definition.AgentInvocable, Effects: effectsFor(definition),
-			})
+			}
+			if !definition.Passthrough {
+				entry.OutputContractVersion = outputContractVersionFor(definition)
+			}
+			matches = append(matches, entry)
 		}
 	}
 	if len(matches) == 0 {
@@ -242,11 +250,13 @@ func schemaDocument(definition commandDefinition) commandSchemaDocument {
 		Summary: definition.Summary, ReadOnly: definition.ReadOnly, AgentInvocable: definition.AgentInvocable,
 		Effects: effectsFor(definition), Positionals: positionals, Options: optionDocuments,
 		Output: definition.Output, CredentialEnv: definition.CredentialEnv,
-		ErrorCodes: []string{"invalid_arguments", "invalid_request", "internal_error", "not_configured", "authentication_failed", "plan_required", "rate_limited", "not_found", "http_error", "provider_unavailable", "provider_response_too_large", "output_too_large", "invalid_provider_response", "network_error", "timeout", "upstream_failed"},
+		ErrorCodes: []string{"invalid_arguments", "invalid_request", "internal_error", "not_configured", "authentication_failed", "plan_required", "rate_limited", "not_found", "http_error", "provider_unavailable", "provider_response_too_large", "output_too_large", "invalid_provider_response", "UPSTREAM_SCHEMA_MISMATCH", "INTERNAL_OUTPUT_CONTRACT_MISMATCH", "network_error", "timeout", "upstream_failed"},
 		Examples:   append([]string(nil), definition.Examples...),
 		Response:   JSONTypeSchema{Type: "passthrough"},
 	}
 	if !definition.Passthrough {
+		document.EnvelopeSchemaVersion = agentSchemaVersion
+		document.OutputContractVersion = outputContractVersionFor(definition)
 		document.Params = describeRawParams(definition)
 		document.Response = describeJSONType(definition.ResponseType, 0)
 	} else {
@@ -316,7 +326,7 @@ func describeRawParams(definition commandDefinition) *rawParamsObjectSchema {
 	document := &rawParamsObjectSchema{
 		Type: "object", MaximumBytes: maximumRawParamsBytes, AdditionalProperties: false,
 		ConflictRule:   "cannot be combined with positional arguments or convenience input flags",
-		OutputControls: []string{"--json", "--fields", "--compact"},
+		OutputControls: []string{"--json", "--fields", "--require-fields", "--compact"},
 	}
 	for _, positional := range definition.Positionals {
 		types := []string{"string"}
@@ -414,7 +424,7 @@ func describeJSONType(valueType reflect.Type, depth int) JSONTypeSchema {
 func commandDefinitions() []commandDefinition {
 	providerJSON := outputSchema{
 		Formats: []string{"text", "json"}, DefaultFormat: "text", MaximumProviderPayloadBytes: provider.MaximumProviderResponseBytes, MaximumJSONOutputBytes: maximumJSONOutputBytes,
-		ContextRules: []string{"--fields and --compact require JSON output", "use --fields to project JSON", "use --compact for single-line JSON", "bound provider-specific list and time-window options"},
+		ContextRules: []string{"--fields, --require-fields, and --compact require JSON output", "field paths are relative to envelope.data", "use --require-fields for task-critical optional data", "use --compact for single-line JSON", "bound provider-specific list and time-window options"},
 	}
 	marketSearchJSON := providerJSON
 	marketSearchJSON.ItemLimits = map[string]int{"events": 50, "events.markets": provider.MaximumMarketsPerEvent}
@@ -424,15 +434,15 @@ func commandDefinitions() []commandDefinition {
 	polyweatherJSON := providerJSON
 	polyweatherJSON.ItemLimits = map[string]int{"markets.events": 10, "markets.events.markets": provider.MaximumMarketsPerEvent}
 	definitions := []commandDefinition{
-		{Path: []string{"betmoar", "search"}, Summary: "Search public Polymarket markets", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "query", Required: true, Variadic: true, MaxLength: 512, Normalization: "trim", Description: "Market search query"}}, Options: betmoarOptions["search"], Output: marketSearchJSON, Examples: []string{`betmoar search "highest temperature" --limit 5 --json`}, ResponseType: reflect.TypeOf(provider.MarketSearchResult{})},
-		{Path: []string{"betmoar", "book"}, Summary: "Fetch a public Polymarket order book", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "token-id", Required: true, MaxLength: 128, Pattern: decimalTokenSchemaPattern, Normalization: "trim", Description: "Decimal Polymarket token identifier"}}, Options: betmoarOptions["book"], Output: orderBookJSON, Examples: []string{"betmoar book 123456789 --json"}, ResponseType: reflect.TypeOf(provider.OrderBookResult{})},
+		{Path: []string{"betmoar", "search"}, Summary: "Search public Polymarket markets", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "query", Required: true, Variadic: true, MaxLength: 512, Normalization: "trim", Description: "Market search query"}}, Options: betmoarOptions["search"], Output: marketSearchJSON, Examples: []string{`betmoar search "highest temperature" --limit 5 --json`}, ResponseType: reflect.TypeOf(provider.MarketSearchResult{})},
+		{Path: []string{"betmoar", "book"}, Summary: "Fetch a public Polymarket order book", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "token-id", Required: true, MaxLength: 128, Pattern: decimalTokenSchemaPattern, Normalization: "trim", Description: "Decimal Polymarket token identifier"}}, Options: betmoarOptions["book"], Output: orderBookJSON, Examples: []string{"betmoar book 123456789 --json"}, ResponseType: reflect.TypeOf(provider.OrderBookResult{})},
 		{Path: []string{"betmoar", "upstream"}, Summary: "Delegate arguments to the official Polymarket CLI", ReadOnly: false, AgentInvocable: false, Positionals: []positionalSchema{{Name: "arguments", Variadic: true, Description: "May mutate or trade; requires an explicit -- boundary and user review"}}, Options: upstreamOptions, Output: outputSchema{Formats: []string{"passthrough", "json"}, DefaultFormat: "passthrough"}, Passthrough: true, Examples: []string{"betmoar upstream --dry-run -- markets search bitcoin --limit 5"}},
-		{Path: []string{"metar"}, Summary: "Fetch NOAA aviation observations", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "station", Required: true, Variadic: true, Pattern: stationListSchemaPattern, Normalization: "split on commas, trim, uppercase", Description: "Three or four character ICAO station identifier"}}, Options: metarOptions, Output: metarJSON, Examples: []string{"metar KSFO KJFK --hours 2 --json"}, ResponseType: reflect.TypeOf(provider.METARResult{})},
-		{Path: []string{"open-meteo"}, Summary: "Resolve a location and fetch weather forecasts", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "location", Required: true, Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: openMeteoOptions, Output: providerJSON, Examples: []string{`open-meteo "San Francisco" --days 3 --json`}, ResponseType: reflect.TypeOf(provider.ForecastResult{})},
-		{Path: []string{"polyweather"}, Summary: "Combine METAR, forecast, and market data", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "station", Required: true, MaxLength: 4, Pattern: stationSchemaPattern, Normalization: "trim, uppercase"}, {Name: "city", Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: polyweatherOptions, Output: polyweatherJSON, Examples: []string{`polyweather KSFO "San Francisco" --limit 3 --json`}, ResponseType: reflect.TypeOf(polyweatherResult{})},
-		{Path: []string{"meteoblue"}, Summary: "Fetch a meteoblue forecast package", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "location", Required: true, Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: meteoblueOptions, Output: providerJSON, CredentialEnv: "METEOBLUE_API_KEY", Examples: []string{`meteoblue "San Francisco" --json`}, ResponseType: reflect.TypeOf(provider.MeteoblueResult{})},
-		{Path: []string{"wunderground"}, Summary: "Fetch Weather Underground PWS observations", ReadOnly: true, AgentInvocable: true, Positionals: []positionalSchema{{Name: "station-id", Required: true, MaxLength: 64, Pattern: pwsStationSchemaPattern, Normalization: "trim, uppercase"}}, Options: wundergroundOptions, Output: providerJSON, CredentialEnv: "WEATHER_COMPANY_API_KEY", Examples: []string{"wunderground KMAHANOV10 --units e --json"}, ResponseType: reflect.TypeOf(provider.WundergroundResult{})},
-		{Path: []string{"providers"}, Summary: "Inspect provider and credential readiness", ReadOnly: true, AgentInvocable: true, Options: map[string]optionSpec{}, Output: providerJSON, Examples: []string{"mwx providers --json"}, ResponseType: reflect.TypeOf(providersResult{})},
+		{Path: []string{"metar"}, Summary: "Fetch NOAA aviation observations", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "station", Required: true, Variadic: true, Pattern: stationListSchemaPattern, Normalization: "split on commas, trim, uppercase", Description: "Three or four character ICAO station identifier"}}, Options: metarOptions, Output: metarJSON, Examples: []string{"metar KSFO KJFK --hours 2 --json"}, ResponseType: reflect.TypeOf(provider.METARResult{})},
+		{Path: []string{"open-meteo"}, Summary: "Resolve a location and fetch weather forecasts", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "location", Required: true, Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: openMeteoOptions, Output: providerJSON, Examples: []string{`open-meteo "San Francisco" --days 3 --json`}, ResponseType: reflect.TypeOf(provider.ForecastResult{})},
+		{Path: []string{"polyweather"}, Summary: "Combine METAR, forecast, and market data", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "station", Required: true, MaxLength: 4, Pattern: stationSchemaPattern, Normalization: "trim, uppercase"}, {Name: "city", Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: polyweatherOptions, Output: polyweatherJSON, Examples: []string{`polyweather KSFO "San Francisco" --limit 3 --json`}, ResponseType: reflect.TypeOf(polyweatherResult{})},
+		{Path: []string{"meteoblue"}, Summary: "Fetch a meteoblue forecast package", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "location", Required: true, Variadic: true, MaxLength: 256, Normalization: "join with spaces, trim"}}, Options: meteoblueOptions, Output: providerJSON, CredentialEnv: "METEOBLUE_API_KEY", Examples: []string{`meteoblue "San Francisco" --json`}, ResponseType: reflect.TypeOf(provider.MeteoblueResult{})},
+		{Path: []string{"wunderground"}, Summary: "Fetch Weather Underground PWS observations", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Positionals: []positionalSchema{{Name: "station-id", Required: true, MaxLength: 64, Pattern: pwsStationSchemaPattern, Normalization: "trim, uppercase"}}, Options: wundergroundOptions, Output: providerJSON, CredentialEnv: "WEATHER_COMPANY_API_KEY", Examples: []string{"wunderground KMAHANOV10 --units e --json"}, ResponseType: reflect.TypeOf(provider.WundergroundResult{})},
+		{Path: []string{"providers"}, Summary: "Inspect provider and credential readiness", ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1, Options: map[string]optionSpec{}, Output: providerJSON, Examples: []string{"mwx providers --json"}, ResponseType: reflect.TypeOf(providersResult{})},
 	}
 	wethrSummaries := map[string]string{
 		"obs": "Fetch Wethr observations", "extreme": "Fetch Wethr temperature extremes", "forecast": "Fetch Wethr model forecasts",
@@ -451,7 +461,7 @@ func commandDefinitions() []commandDefinition {
 	sort.Strings(wethrNames)
 	for _, name := range wethrNames {
 		definitions = append(definitions, commandDefinition{
-			Path: []string{"wethr", name}, Summary: wethrSummaries[name], ReadOnly: true, AgentInvocable: true,
+			Path: []string{"wethr", name}, Summary: wethrSummaries[name], ReadOnly: true, AgentInvocable: true, OutputContractRevision: 1,
 			Positionals: []positionalSchema{{Name: "station", Required: true, MaxLength: 4, Pattern: stationSchemaPattern, Normalization: "trim, uppercase"}}, Options: wethrOptions[name], Output: providerJSON, CredentialEnv: "WETHR_API_KEY", Examples: []string{wethrExamples[name]}, ResponseType: reflect.TypeOf(provider.WethrResult{}),
 		})
 	}

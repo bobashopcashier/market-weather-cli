@@ -36,8 +36,11 @@ func TestSchemaErrorsUseVersionedJSONEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	var envelope struct {
-		SchemaVersion string `json:"schemaVersion"`
-		Error         struct {
+		SchemaVersion         string `json:"schemaVersion"`
+		OutputContractVersion string `json:"outputContractVersion"`
+		Command               string `json:"command"`
+		OK                    bool   `json:"ok"`
+		Error                 struct {
 			Code     string `json:"code"`
 			ExitCode int    `json:"exitCode"`
 		} `json:"error"`
@@ -45,7 +48,7 @@ func TestSchemaErrorsUseVersionedJSONEnvelope(t *testing.T) {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("invalid JSON error: %v: %s", err, data)
 	}
-	if envelope.SchemaVersion != "mwx.error/v1" || envelope.Error.Code != "invalid_arguments" || envelope.Error.ExitCode != 2 {
+	if envelope.SchemaVersion != agentSchemaVersion || envelope.OutputContractVersion != genericErrorOutputContractVersion || envelope.Command != "schema" || envelope.OK || envelope.Error.Code != "invalid_arguments" || envelope.Error.ExitCode != 2 {
 		t.Fatalf("unexpected error envelope: %#v", envelope)
 	}
 	if output, err := os.ReadFile(stdout.Name()); err != nil || len(output) != 0 {
@@ -59,6 +62,47 @@ func TestArgumentControlsAreRejectedWithoutReflection(t *testing.T) {
 		if err == nil || err.Error() != "argument 2 contains a control character" {
 			t.Fatalf("unexpected error for %q: %v", value, err)
 		}
+	}
+}
+
+func TestJSONControlCharacterErrorsDoNotReflectTheCommand(t *testing.T) {
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalErr, originalOut := os.Stderr, os.Stdout
+	os.Stderr, os.Stdout = stderr, stdout
+	defer func() { os.Stderr, os.Stdout = originalErr, originalOut }()
+	unsafeCommand := "bad\u202ecommand"
+	if code := Run("", []string{unsafeCommand, "--json", "--compact"}); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if err := stderr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdout.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), unsafeCommand) || strings.ContainsRune(string(data), '\u202e') {
+		t.Fatalf("unsafe command was reflected: %q", data)
+	}
+	var envelope agentEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Command != "" || envelope.OutputContractVersion != genericErrorOutputContractVersion || envelope.Error == nil || envelope.Error.Code != "invalid_arguments" {
+		t.Fatalf("unexpected pre-dispatch error envelope: %#v", envelope)
+	}
+	if output, err := os.ReadFile(stdout.Name()); err != nil || len(output) != 0 {
+		t.Fatalf("JSON error wrote stdout: %q, err=%v", output, err)
 	}
 }
 
@@ -169,13 +213,13 @@ func TestHumanMarketOutputReportsTruncationCounts(t *testing.T) {
 			Events: []provider.MarketEvent{{Title: "Weather", Slug: "weather"}},
 			Truncation: []provider.Truncation{
 				{Path: "events", SourceCount: 9, EmittedCount: 5},
-				{Path: "events.42.markets", SourceCount: 150, EmittedCount: 100},
+				{Path: "events[].markets", ParentID: "42", SourceCount: 150, EmittedCount: 100},
 			},
 		})
 		return nil
 	})
 	text := string(output)
-	for _, expected := range []string{"Results truncated by safety limits:", "AVAILABLE", "SHOWN", "events.42.markets", "150", "100"} {
+	for _, expected := range []string{"Results truncated by safety limits:", "PARENT", "AVAILABLE", "SHOWN", "events[].markets", "42", "150", "100"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("human output omitted %q: %q", expected, text)
 		}

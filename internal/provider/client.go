@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,12 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
 
 const (
-	userAgent                    = "market-weather-cli/0.2.0"
+	userAgent                    = "market-weather-cli/0.3.0"
 	MaximumProviderResponseBytes = 8 << 20
 )
 
@@ -106,15 +108,68 @@ func (c *Client) GetJSON(ctx context.Context, endpoint string, headers map[strin
 			Details: map[string]any{"url": RedactURL(endpoint), "maximumBytes": MaximumProviderResponseBytes},
 		}
 	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return false, &Error{
-			Code:     "invalid_provider_response",
-			Message:  "provider returned invalid JSON",
-			ExitCode: 1,
-			Details:  map[string]any{"url": RedactURL(endpoint), "error": fmt.Sprint(err)},
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return false, invalidProviderJSONError(endpoint, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = errors.New("provider returned multiple JSON values")
 		}
+		return false, invalidProviderJSONError(endpoint, err)
+	}
+	validation := validateJSONShape(document, target)
+	if !validation.valid() {
+		return false, upstreamSchemaMismatchError(endpoint, validation)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return false, invalidProviderJSONError(endpoint, err)
 	}
 	return true, nil
+}
+
+func upstreamSchemaMismatchError(endpoint string, validation schemaValidationResult) *Error {
+	paths := append([]string(nil), validation.missingFields...)
+	for _, mismatch := range validation.typeMismatches {
+		paths = append(paths, mismatch.Path)
+	}
+	sort.Strings(paths)
+	paths = compactSchemaPaths(paths)
+	return &Error{
+		Code:     "UPSTREAM_SCHEMA_MISMATCH",
+		Message:  "provider response did not match the expected JSON schema",
+		Hint:     "Affected JSON paths: " + strings.Join(paths, ", "),
+		ExitCode: 6,
+		Details: map[string]any{
+			"url":            RedactURL(endpoint),
+			"missingFields":  validation.missingFields,
+			"typeMismatches": validation.typeMismatches,
+		},
+	}
+}
+
+func compactSchemaPaths(paths []string) []string {
+	if len(paths) < 2 {
+		return paths
+	}
+	result := paths[:1]
+	for _, path := range paths[1:] {
+		if path != result[len(result)-1] {
+			result = append(result, path)
+		}
+	}
+	return result
+}
+
+func invalidProviderJSONError(endpoint string, err error) *Error {
+	return &Error{
+		Code:     "invalid_provider_response",
+		Message:  "provider returned invalid JSON",
+		ExitCode: 1,
+		Details:  map[string]any{"url": RedactURL(endpoint), "error": fmt.Sprint(err)},
+	}
 }
 
 func requiredEnv(name, purpose string) (string, error) {

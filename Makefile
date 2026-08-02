@@ -1,7 +1,7 @@
 BINS := mwx betmoar metar wethr polyweather open-meteo meteoblue wunderground
 BUILD_DIR := $(CURDIR)/dist
 
-.PHONY: all build test check install clean
+.PHONY: all build fmt-check vet test race check install clean
 
 all: check build
 
@@ -15,10 +15,16 @@ build:
 test:
 	go test ./...
 
-check:
-	gofmt -w $$(find cmd internal -name '*.go')
+fmt-check:
+	test -z "$$(gofmt -l cmd internal)"
+
+vet:
 	go vet ./...
-	go test ./...
+
+race:
+	go test -race ./...
+
+check: fmt-check vet test race
 
 install:
 	@for bin in $(BINS); do \

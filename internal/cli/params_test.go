@@ -7,12 +7,12 @@ import (
 
 func TestRawParamsExpandsToTypedArguments(t *testing.T) {
 	argv, err := expandRawParams("metar", []string{
-		"--params", `{"station":["KSFO","KJFK"],"hours":6,"raw":true}`, "--json", "--compact",
+		"--params", `{"station":["KSFO","KJFK"],"hours":6,"raw":true}`, "--json", "--fields", "observations.icaoId", "--require-fields", "observations.icaoId", "--compact",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--hours", "6", "--raw", "--json", "--compact", "--", "KSFO", "KJFK"}
+	want := []string{"--hours", "6", "--raw", "--json", "--fields", "observations.icaoId", "--require-fields", "observations.icaoId", "--compact", "--", "KSFO", "KJFK"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("expanded args = %#v, want %#v", argv, want)
 	}

@@ -135,7 +135,7 @@ func TestJSONDefaultAllowsBookContextControls(t *testing.T) {
 
 func TestJSONOutputHasHardContextLimit(t *testing.T) {
 	parsed := parsedArgs{values: map[string]string{}, bools: map[string]bool{"json": true, "compact": true}}
-	err := writeJSON(parsed, map[string]any{"data": strings.Repeat("x", maximumJSONOutputBytes)})
+	err := writeJSON(parsed, "providers", providersResult{Providers: []providerStatus{{Name: strings.Repeat("x", maximumJSONOutputBytes)}}})
 	var appErr *provider.Error
 	if !errors.As(err, &appErr) || appErr.Code != "output_too_large" {
 		t.Fatalf("oversized output error = %#v", err)
